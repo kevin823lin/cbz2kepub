@@ -110,4 +110,6 @@ wrapper 產生 `ComicInfo.xml`，交由 KCC 原生 metadata 流程讀取。單 C
 
 每次工作在 `work_root/c2k-*` 下建立 `s/`（來源）、`t/`（子程序暫存）、`o/`（KCC 成品）及 `space-plan.json`、`kcc.log`。成功清理整個工作目錄，失敗保留已建立的診斷資料。只為本次子程序設定 TEMP／TMP／TMPDIR，不改全機設定。
 
+轉檔時 KCC 的輸出會即時顯示並寫入 `kcc.log`；耗時階段可能暫時沒有新的進度訊息。
+
 同磁碟區 work 到 output 用 rename；跨磁碟區才複製、比對大小並於成功後刪來源。發布回復、排他鎖及容量限制見 [架構文件](architecture.md)。

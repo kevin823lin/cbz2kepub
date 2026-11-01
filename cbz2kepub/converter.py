@@ -216,6 +216,18 @@ def ordered_outputs(output_dir):
     return [numbered[index] for index in sorted(numbered)]
 
 
+def run_kcc(command, work, environment):
+    with (work / 'kcc.log').open('w', encoding='utf-8') as log:
+        with subprocess.Popen(command, cwd=work, env=environment, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', bufsize=1) as process:
+            for line in process.stdout:
+                log.write(line)
+                log.flush()
+                print(line, end='', flush=True)
+            if process.wait():
+                raise subprocess.CalledProcessError(process.returncode, command)
+
+
 def validate_book(job, summaries):
     if any(not result['has_cover_page'] for result in summaries):
         raise ValueError('成品缺少封面閱讀頁')
@@ -385,11 +397,10 @@ def convert_comic(job, config, target_mib=TARGET_MIB):
             shutil.copy2(job['cover'], covers / 'cover.jpg')
         write_comic_info(job, staging)
         environment = dict(os.environ, TEMP=str(temporary), TMP=str(temporary), TMPDIR=str(temporary),
-                           PYTHONUTF8='1', PYTHONIOENCODING='utf-8', QT_QPA_PLATFORM='offscreen',
+                           PYTHONUTF8='1', PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1', QT_QPA_PLATFORM='offscreen',
                            CBZ2KEPUB_SPACE_PLAN=str(plan_path),
                            CBZ2KEPUB_SPACE_MODULE=str(Path(__file__).resolve().with_name('space_preflight.py')))
-        with (work / 'kcc.log').open('w', encoding='utf-8') as log:
-            subprocess.run(command, cwd=work, env=environment, stdout=log, stderr=subprocess.STDOUT, check=True)
+        run_kcc(command, work, environment)
         files = ordered_outputs(output)
         summaries = []
         renamed = []
@@ -406,9 +417,6 @@ def convert_comic(job, config, target_mib=TARGET_MIB):
         print(f'完成 {job["title"]}：{len(result)} 卷，{sum(item["body_pages"] for item in summaries)} 個正文頁', flush=True)
     except BaseException:
         print(f'處理失敗，已保留工作目錄與 kcc.log：{work}', file=sys.stderr, flush=True)
-        log_path = work / 'kcc.log'
-        if log_path.exists():
-            print('\n'.join(log_path.read_text(encoding='utf-8', errors='replace').splitlines()[-30:]), file=sys.stderr, flush=True)
         raise
     shutil.rmtree(work)
     return result

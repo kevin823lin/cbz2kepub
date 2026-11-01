@@ -1,5 +1,8 @@
 import json
+import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
@@ -117,6 +120,21 @@ class WrapperTests(unittest.TestCase):
         self.assertIn('--spreadshift', command)
         self.assertEqual(command[command.index('--author') + 1], 'Author')
 
+    def test_kcc_output_is_displayed_and_saved_as_it_arrives_on_failure(self):
+        command = [sys.executable, '-u', '-c',
+                   "import sys; print('進度'); print('錯誤', file=sys.stderr); sys.exit(3)"]
+        displayed = []
+
+        def show(line, **kwargs):
+            self.assertIn(line, (self.root / 'kcc.log').read_text(encoding='utf-8'))
+            displayed.append(line)
+
+        with patch('builtins.print', side_effect=show):
+            with self.assertRaises(subprocess.CalledProcessError) as error:
+                converter.run_kcc(command, self.root, dict(os.environ, PYTHONIOENCODING='utf-8'))
+        self.assertEqual(error.exception.returncode, 3)
+        self.assertEqual(''.join(displayed), '進度\n錯誤\n')
+
     def test_output_volumes_are_numeric_and_complete(self):
         folder = self.root / 'volumes'
         folder.mkdir()
@@ -167,7 +185,7 @@ class WrapperTests(unittest.TestCase):
                 patch.object(converter, 'preflight_batch', side_effect=OSError('no capacity')) as check, \
                 patch.object(converter.shutil, 'copy2') as copy, \
                 patch.object(converter, 'discard_owned_outputs') as discard, \
-                patch.object(converter.subprocess, 'run') as run:
+                patch.object(converter, 'run_kcc') as run:
             with self.assertRaisesRegex(OSError, 'no capacity'):
                 converter.convert_comic(config['jobs'][0], config)
         self.assertEqual(check.call_args.kwargs['copied_override'],
@@ -185,7 +203,7 @@ class WrapperTests(unittest.TestCase):
                 patch.object(converter, 'discard_owned_outputs') as discard, \
                 patch.object(converter, 'require_space', side_effect=OSError('still full')), \
                 patch.object(converter.shutil, 'copy2') as copy, \
-                patch.object(converter.subprocess, 'run') as run:
+                patch.object(converter, 'run_kcc') as run:
             with self.assertRaisesRegex(OSError, 'still full'):
                 converter.convert_comic(config['jobs'][0], config)
         discard.assert_called_once()
