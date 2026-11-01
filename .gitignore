@@ -1,0 +1,38 @@
+# Personal settings; keep the public example.
+/config.toml
+
+# Local Python environments and caches.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local inputs, outputs and temporary workspaces.
+/input/
+/output/
+/tmp/
+/.agent/scratch/
+/KCC-*/
+/LLL-*/
+.cbz2kepub-work/
+.cbz2kepub-publish-*/
+.cbz2kepub-*.json
+.cbz2kepub.lock
+*.cbz
+*.cbr
+*.epub
+*.log
+*.tmp
+
+# Build artifacts and machine-specific files.
+/build/
+/dist/
+*.egg-info/
+.DS_Store
+Thumbs.db
+Desktop.ini

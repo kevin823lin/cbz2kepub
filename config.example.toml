@@ -1,0 +1,28 @@
+# 新版 wrapper 的設定範例；請先換成自己的來源與漫畫名。
+# 複製為個人的 config.toml 後調整路徑；不要提交個人設定。
+
+[batch]
+comics = [
+    { title = "範例漫畫 A", spreadshift = false },
+    # { title = "範例漫畫 B", spreadshift = true },
+    # { title = "範例漫畫 C", spreadshift = false },
+]
+
+[paths]
+# 來源：input_root/<title>/compressed/*.cbz
+# 相對路徑以本設定檔的所在目錄為基準。
+# 可另加 work_root 指定短工作路徑；預設在 input_root 的父目錄下。
+input_root = "./input"
+output_dir = "./output"
+
+[conversion]
+profile = "KoLC"
+manga_style = true
+upscale = true
+forcecolor = true
+eraserainbow = true
+cropping = 2
+
+[publication]
+# false：預檢通過後先刪本作品的舊卷；轉檔失敗無法還原舊卷。
+keep_backup = true
