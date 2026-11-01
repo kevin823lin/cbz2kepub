@@ -278,21 +278,23 @@ def output_lock(output_dir):
 
 
 def prepare_space(job, config, target_mib):
-    key = (config['conversion']['profile'], config['conversion']['forcecolor'], target_mib)
+    conversion = config['conversion']
+    key = (*sorted(conversion.items()), target_mib)
     if job.get('_space_key') == key:
         return job['_space_data']
     sys.path.insert(0, str(ROOT / 'kcc'))
     try:
         from kindlecomicconverter.image import ProfileData
-        target = ProfileData.Profiles[key[0]][1]
+        target = ProfileData.Profiles[conversion['profile']][1]
+        if min(target) <= 0:
+            raise ValueError('容量預檢需要有固定解析度的 profile')
+        quality = 90 if conversion['profile'].startswith('KS') or conversion['profile'] == 'KCS' else 85
+        images = calibrate_images(job['sources'], target, quality, upscale=conversion['upscale'],
+                                  forcecolor=conversion['forcecolor'], eraserainbow=conversion['eraserainbow'])
     except KeyError as exc:
-        raise ValueError(f'未知的 KCC profile：{key[0]}') from exc
+        raise ValueError(f'未知的 KCC profile：{conversion["profile"]}') from exc
     finally:
         sys.path.pop(0)
-    if min(target) <= 0:
-        raise ValueError('容量預檢需要有固定解析度的 profile')
-    quality = 90 if key[0].startswith('KS') or key[0] == 'KCS' else 85
-    images = calibrate_images(job['sources'], target, quality)
     stats = job.get('archive_stats') or [inspect_source(path) for path in job['sources']]
     # Title appears in OPF/collection and NAV/NCX titles/labels; summary/author once per volume.
     metadata_bytes = 7 * len(html_escape(job['title']).encode('utf-8')) + sum(
@@ -309,7 +311,7 @@ def prepare_space(job, config, target_mib):
     print(f'容量估算 {job["title"]}：解壓已知 {data["expanded"]:,} bytes；'
           f'圖片輸出估計 {sum(images["predictions"]):,} bytes'
           f'（{images["samples"]} 張來源記憶體 JPEG 試編碼，品質 {quality}，'
-          f'樣本最大每頁 {images["sample_bytes"]:,} bytes ＋25% 估計餘裕；非大小上界）', flush=True)
+          f'按單頁／拆頁及來源大小分層加權，＋25% 估計餘裕；非大小上界）', flush=True)
     return data
 
 

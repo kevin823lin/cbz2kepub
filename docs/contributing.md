@@ -46,7 +46,7 @@ KCC 測試從 `kcc/` 執行：
 
 ## KCC fork 與 submodule
 
-主專案引用 [kevin823lin/kcc](https://github.com/kevin823lin/kcc)，固定 `d170828`。`v12.1.4` tag 保留在原始基準 `370d58d`，不移動此 tag。
+主專案引用 [kevin823lin/kcc](https://github.com/kevin823lin/kcc)，固定 `5f4e5ad`。`v12.1.4` tag 保留在原始基準 `370d58d`，不移動此 tag。
 
 更新時先在 fork 合併上游、解決衝突並跑相關驗證，再提交／推送 KCC，最後在主專案提交新的 gitlink。一般安裝不加 `--remote`，避免跳過固定版本。有未提交修改時先保存工作。
 

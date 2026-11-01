@@ -54,12 +54,16 @@ def image_peak(originals, predictions, workers):
 
 def page_count(size, target):
     width, height = size
-    return 2 if (width > height) != (target[0] > target[1]) and max(width, height) / min(width, height) > 1.05 else 1
+    return 2 if (width > height) != (target[0] > target[1]) and 1.16 < width / height < 1.8 else 1
 
 
-def calibrate_images(sources, target, quality=85):
-    """Read image headers, then trial-encode at most three source images in RAM."""
+def calibrate_images(sources, target, quality=85, *, upscale=True, forcecolor=True, eraserainbow=False):
+    """Weight at most 24 RAM samples by their size stratum and split-page group."""
     from PIL import Image, ImageOps
+    if eraserainbow:
+        from kindlecomicconverter.image import colorCheck, erase_rainbow_artifacts
+        from types import SimpleNamespace
+
     images = []
     for source in sources:
         with zipfile.ZipFile(source) as archive:
@@ -72,29 +76,51 @@ def calibrate_images(sources, target, quality=85):
                     images.append((Path(source), item.filename, item.file_size, image.size))
     if not images:
         raise ValueError('無法校準圖片容量：沒有圖片')
-    ordered = sorted(images, key=lambda item: item[2])
-    samples = [ordered[index] for index in sorted({0, len(ordered) // 2, len(ordered) - 1})]
-    maximum = 0
-    for source, name, _, _ in samples:
-        with zipfile.ZipFile(source) as archive, archive.open(name) as stream, Image.open(stream) as image:
-            # Native KCC can retain a color first page even when forcecolor is false.
-            image = image.convert('RGB')
-            candidates = [image]
-            if page_count(image.size, target) == 2:
-                width, height = image.size
-                boxes = ((0, 0, width // 2, height), (width // 2, 0, width, height)) if width > height else (
-                    (0, 0, width, height // 2), (0, height // 2, width, height))
-                candidates.extend(image.crop(box) for box in boxes)
-            for candidate in candidates:
-                resized = ImageOps.fit(candidate, target, method=Image.Resampling.LANCZOS)
-                buffer = BytesIO()
-                resized.save(buffer, 'JPEG', optimize=True, quality=quality)
-                maximum = max(maximum, buffer.tell())
-    # shortcut: samples cannot bound unseen JPEG content; recheck actual bytes after processing.
-    page_bytes = math.ceil(maximum * 1.25)
-    return dict(page_bytes=page_bytes, sample_bytes=maximum, samples=len(samples),
-                originals=[item[2] for item in images],
-                predictions=[page_bytes * page_count(item[3], target) for item in images])
+    groups = {}
+    for index, item in enumerate(images):
+        groups.setdefault(page_count(item[3], target), []).append(index)
+    predictions = [0] * len(images)
+    maximum = samples = 0
+    for pages, indices in groups.items():
+        indices.sort(key=lambda index: images[index][2])
+        count = min(len(indices), 24 // len(groups))
+        for group in range(count):
+            members = indices[len(indices) * group // count:len(indices) * (group + 1) // count]
+            source, name, _, _ = images[members[len(members) // 2]]
+            encoded = 0
+            with zipfile.ZipFile(source) as archive, archive.open(name) as stream, Image.open(stream) as image:
+                is_color = image.mode not in ('1', 'L')
+                if eraserainbow:
+                    is_color = colorCheck(image, image.mode, SimpleNamespace(forcecolor=forcecolor, webtoon=False))
+                image = image.convert('RGB' if forcecolor and is_color else 'L')
+                if pages == 2:
+                    width, height = image.size
+                    candidates = [image.crop(box) for box in ((0, 0, width // 2, height), (width // 2, 0, width, height))]
+                else:
+                    candidates = [image]
+                    if (image.width > image.height) != (target[0] > target[1]) and image.width / image.height >= 1.8:
+                        candidates = [image.rotate(90, expand=True)]
+                for candidate in candidates:
+                    resized = candidate
+                    if upscale or candidate.width > target[0] or candidate.height > target[1]:
+                        method = Image.Resampling.BICUBIC if candidate.width <= target[0] and candidate.height <= target[1] else Image.Resampling.LANCZOS
+                        if abs(candidate.height / candidate.width - target[1] / target[0]) < 0.015:
+                            resized = ImageOps.fit(candidate, target, method=method)
+                        else:
+                            resized = ImageOps.contain(candidate, target, method=method)
+                    if eraserainbow and min(resized.size) > 1:
+                        resized = erase_rainbow_artifacts(resized, forcecolor and is_color)
+                    buffer = BytesIO()
+                    resized.save(buffer, 'JPEG', optimize=True, quality=quality)
+                    encoded += buffer.tell()
+                    maximum = max(maximum, buffer.tell())
+            samples += 1
+            # shortcut: cropping/gamma and unseen content remain approximate; recheck actual bytes after processing.
+            predicted = math.ceil(encoded * 1.25)
+            for index in members:
+                predictions[index] = predicted
+    return dict(page_bytes=math.ceil(maximum * 1.25), sample_bytes=maximum, samples=samples,
+                originals=[item[2] for item in images], predictions=predictions)
 
 
 class SpacePlan:
@@ -129,8 +155,7 @@ class SpacePlan:
                     + len(self.data['images']['originals']) * 4096)
         total = predicted + overhead
         largest = min(predicted, target_bytes) + overhead
-        # 7z rename may use an archive temporary file; keep this explicit allowance.
-        return total + 2 * largest, total
+        return total + largest, total
 
     def initial_budget(self, copied_bytes):
         images = self.data['images']
@@ -152,44 +177,44 @@ class SpacePlan:
         require_space(destination, expanded, 'CBZ 解壓預檢')
 
     def before_images(self, images_dir):
-        from PIL import Image
         images_dir = self._inside_work(images_dir)
-        originals, predictions = [], []
-        for path in images_dir.rglob('*'):
-            if path.is_file() and path.suffix.lower() in IMAGE_TYPES:
-                with Image.open(path) as image:
-                    predictions.append(self.page_bytes * page_count(image.size, self.target))
-                originals.append(path.stat().st_size)
+        current = sum(path.stat().st_size for path in images_dir.rglob('*')
+                      if path.is_file() and path.suffix.lower() in IMAGE_TYPES)
+        originals, predictions = self.data['images']['originals'], self.data['images']['predictions']
         packing, _ = self.packaging_peak(sum(predictions))
         peak = max(image_peak(originals, predictions, self.workers), packing)
-        require_space(images_dir, peak - sum(originals), '圖片處理及剩餘封裝預檢（圖片大小為估計）')
+        require_space(images_dir, peak - current, '圖片處理及剩餘封裝預檢（沿用分層圖片估計）')
 
-    def before_zip(self, tome, zipfilename, sevenzip=False):
+    def before_zip(self, tome, zipfilename):
         tome, output = self._inside_work(tome), self._inside_work(zipfilename)
         files = [path for path in tome.rglob('*') if path.is_file()]
         size = sum(path.stat().st_size + 256 + 2 * len(path.relative_to(tome).as_posix().encode('utf-8'))
                    for path in files) + 4096
-        temporary = size if sevenzip else 0
-        print(f'封裝預檢：工作檔及 ZIP 結構約 {size:,} bytes；7z 暫存預留 {temporary:,} bytes', flush=True)
-        require_space(output, size + temporary, 'EPUB 封裝預檢')
+        print(f'封裝預檢：需新增 ZIP 約 {size:,} bytes（含 ZIP 結構；直接封裝一次）', flush=True)
+        require_space(output, size, 'EPUB 封裝預檢')
 
-    def after_images(self, tomes):
+    def after_images(self, tomes, cover=None):
         sizes, overheads = [], []
-        for tome in tomes:
+        for index, tome in enumerate(tomes, 1):
             tome = self._inside_work(tome)
             files = [path for path in tome.rglob('*') if path.is_file()]
             sizes.append(sum(path.stat().st_size for path in files))
-            overheads.append(self.page_bytes + self.data.get('metadata_bytes', 0) + len(files) * 4096)
+            cover_bytes = 0
+            if cover is not None:
+                buffer = BytesIO()
+                cover.save_to_folder(buffer, index if len(tomes) > 1 else 0, len(tomes))
+                cover_bytes = buffer.tell()
+            overheads.append(cover_bytes + self.data.get('metadata_bytes', 0) + len(files) * 4096)
         present = sum(sizes)
         occupancy = peak = present
         output_bytes = 0
         for size, overhead in zip(sizes, overheads):
             archive = size + overhead
-            peak = max(peak, occupancy + overhead + 2 * archive)
+            peak = max(peak, occupancy + overhead + archive)
             occupancy += archive - size
             output_bytes += archive
         print(f'圖片處理完成預檢：實際分卷工作資料 {present:,} bytes，{len(sizes)} 卷；'
-              f'work 後續最大新增約 {peak - present:,} bytes（含 7z 暫存預留）', flush=True)
+              f'work 後續最大新增約 {peak - present:,} bytes（直接封裝一次）', flush=True)
         require_space(self.work, peak - present, '實際圖片完成後的剩餘封裝預檢')
         output = Path(self.data['output_dir'])
         if not same_volume(self.work, output):

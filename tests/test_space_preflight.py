@@ -3,6 +3,7 @@ from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import random
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -130,20 +131,23 @@ class SpaceTests(unittest.TestCase):
         current = (self.images / 'page.png').stat().st_size
         with patch.object(space, 'require_space') as check:
             plan.before_images(self.images)
-        expected = max(space.image_peak([current], [100], plan.workers), plan.packaging_peak(100)[0]) - current
+        expected = max(space.image_peak([200, 200], [100, 100], plan.workers), plan.packaging_peak(200)[0]) - current
         self.assertEqual(check.call_args.args[1], expected)
         with self.assertRaisesRegex(ValueError, 'outside'):
             plan.before_images(self.work.parent)
 
-    def test_zip_checks_actual_files_and_explicit_sevenzip_temporary(self):
+    def test_zip_checks_only_one_new_archive_against_current_free(self):
         (self.images / 'page.jpg').write_bytes(b'bytes')
         plan = space.SpacePlan(self.data)
         with patch.object(space, 'require_space') as check:
             plan.before_zip(self.work / 't', self.work / 'o' / 'book.epub')
-            plain = check.call_args.args[1]
-            plan.before_zip(self.work / 't', self.work / 'o' / 'book.epub', sevenzip=True)
-            self.assertEqual(check.call_args.args[1], plain * 2)
-        self.assertGreater(plain, 5)
+            needed = check.call_args.args[1]
+        self.assertGreater(needed, 5)
+        with patch.object(space.shutil, 'disk_usage', return_value=SimpleNamespace(free=needed + space.MARGIN)):
+            plan.before_zip(self.work / 't', self.work / 'o' / 'book.epub')
+        with patch.object(space.shutil, 'disk_usage', return_value=SimpleNamespace(free=needed + space.MARGIN - 1)):
+            with self.assertRaisesRegex(OSError, '空間不足'):
+                plan.before_zip(self.work / 't', self.work / 'o' / 'book.epub')
 
     def test_after_images_replaces_predictions_with_actual_sizes_and_volume_count(self):
         first, second = self.work / 't' / 'volume1', self.work / 't' / 'volume2'
@@ -151,15 +155,31 @@ class SpaceTests(unittest.TestCase):
         second.mkdir()
         (first / 'page.jpg').write_bytes(b'a' * 500)
         (second / 'page.jpg').write_bytes(b'b' * 800)
-        overhead = 100 + 4096
+        overhead = 4096
         with patch.object(space, 'require_space') as check, \
                 patch.object(space, 'same_volume', side_effect=lambda first, second: Path(second) == self.work):
             space.SpacePlan(self.data).after_images([first, second])
-        # First ZIP and its temporary coexist with all images; next volume retains the first ZIP.
-        expected = max(overhead + 2 * (500 + overhead),
-                       overhead + overhead + 2 * (800 + overhead))
+        # Completed ZIPs replace their work images; only the current ZIP adds a content copy.
+        expected = max(overhead + (500 + overhead),
+                       overhead + overhead + (800 + overhead))
         self.assertEqual(check.call_args_list[0].args[1], expected)
         self.assertEqual(check.call_args_list[1].args[1], 1300 + 2 * overhead)
+
+    def test_after_images_measures_each_volume_cover_in_memory(self):
+        tome = self.work / 't' / 'book'
+        tome.mkdir()
+        (tome / 'page.jpg').write_bytes(b'x' * 500)
+        calls = []
+
+        def cover(target, index, count):
+            calls.append((index, count))
+            target.write(b'cover' * 10)
+
+        self.data['images']['page_bytes'] = 100_000_000
+        with patch.object(space, 'require_space') as check:
+            space.SpacePlan(self.data).after_images([tome], SimpleNamespace(save_to_folder=cover))
+        self.assertEqual(calls, [(0, 1)])
+        self.assertEqual(check.call_args.args[1], 500 + 2 * (50 + 4096))
 
     def test_calibration_reads_sources_without_disk_outputs_and_models_split_pages(self):
         source = self.work / 'source.cbz'
@@ -173,11 +193,59 @@ class SpaceTests(unittest.TestCase):
         before = source.read_bytes()
         with patch.object(space, 'require_space'):
             result = space.calibrate_images([source], (100, 150))
-        self.assertEqual(result['samples'], 3)
-        self.assertEqual(result['predictions'][1], result['page_bytes'] * 2)
-        self.assertEqual(result['predictions'][0], result['page_bytes'])
+        self.assertEqual(result['samples'], 4)
+        self.assertEqual(len(result['predictions']), 4)
+        self.assertGreater(result['predictions'][1], result['predictions'][0])
         self.assertEqual(source.read_bytes(), before)
         self.assertEqual(sorted(path.name for path in self.work.iterdir()), ['source.cbz', 't'])
+
+    def test_large_sample_budget_applies_only_to_its_stratum(self):
+        source = self.work / 'source.cbz'
+        with zipfile.ZipFile(source, 'w') as archive:
+            for index in range(48):
+                image = Image.new('RGB', (100, 150), 'white') if index < 47 else Image.frombytes(
+                    'RGB', (100, 150), random.Random(1).randbytes(100 * 150 * 3))
+                buffer = BytesIO()
+                image.save(buffer, 'PNG')
+                archive.writestr(f'{index}.png', buffer.getvalue())
+        before = source.read_bytes()
+        result = space.calibrate_images([source], (100, 150))
+        self.assertEqual(result['samples'], 24)
+        self.assertGreater(max(result['predictions']), 10 * min(result['predictions']))
+        self.assertLess(sum(result['predictions']), result['page_bytes'] * 48 // 4)
+        self.assertEqual(source.read_bytes(), before)
+
+    def test_calibration_honors_upscale_and_color_settings_without_filling_target(self):
+        source = self.work / 'source.cbz'
+        with zipfile.ZipFile(source, 'w') as archive:
+            buffer = BytesIO()
+            Image.new('RGB', (30, 60), 'red').save(buffer, 'PNG')
+            archive.writestr('page.png', buffer.getvalue())
+        saved = []
+        save = Image.Image.save
+
+        def record(image, *args, **kwargs):
+            saved.append((image.size, image.mode))
+            return save(image, *args, **kwargs)
+
+        with patch.object(Image.Image, 'save', record):
+            space.calibrate_images([source], (100, 150), upscale=False, forcecolor=False)
+            space.calibrate_images([source], (100, 150), upscale=True, forcecolor=True)
+        self.assertEqual(saved, [((30, 60), 'L'), ((75, 150), 'RGB')])
+
+    def test_split_estimate_matches_default_kcc_landscape_thresholds(self):
+        self.assertEqual(space.page_count((110, 100), (100, 150)), 1)
+        self.assertEqual(space.page_count((150, 100), (100, 150)), 2)
+        self.assertEqual(space.page_count((200, 100), (100, 150)), 1)
+
+    def test_image_phase_keeps_stratified_predictions_instead_of_global_maximum(self):
+        self.data['images']['predictions'] = [10, 30]
+        self.data['images']['page_bytes'] = 1000
+        with patch.object(space.SpacePlan, 'packaging_peak', return_value=(0, 0)) as packing, \
+                patch.object(space, 'require_space') as check:
+            space.SpacePlan(self.data).before_images(self.images)
+        packing.assert_called_once_with(40)
+        self.assertEqual(check.call_args.args[1], 440)
 
 
 if __name__ == '__main__':
