@@ -13,13 +13,18 @@ __pycache__/
 htmlcov/
 
 # Local inputs, outputs and temporary workspaces.
-/input/
-/output/
+/input/*
+!/input/.gitkeep
+/output/*
+!/output/.gitkeep
 /tmp/
 /.agent/scratch/
 /KCC-*/
 /LLL-*/
 .cbz2kepub-work/
+!/.cbz2kepub-work/
+/.cbz2kepub-work/*
+!/.cbz2kepub-work/.gitkeep
 .cbz2kepub-publish-*/
 .cbz2kepub-*.json
 .cbz2kepub.lock

@@ -16,6 +16,8 @@ uv pip sync --python .venv/Scripts/python.exe requirements.lock
 
 ## 準備輸入
 
+使用範例設定時，將作品資料夾放進專案附的 `input/`，轉檔完成後到 `output/` 取書。
+
 ```text
 input_root/
 └─ 範例漫畫 A/
@@ -32,7 +34,7 @@ input_root/
 
 ### config.toml：選擇作品與轉檔方式
 
-將 [config.example.toml](config.example.toml) 複製為根目錄的 `config.toml`，先修改作品名稱、`input_root` 與 `output_dir`；已有個人設定時直接編輯，不要覆寫。
+將 [config.example.toml](config.example.toml) 複製為根目錄的 `config.toml`。使用預設資料夾時，只需將漫畫清單中的作品名稱改成你的資料夾名稱。使用其他位置時再調整 `input_root` 與 `output_dir`。已有個人設定時直接編輯。
 
 ```toml
 [batch]
@@ -44,7 +46,7 @@ comics = [
 [paths]
 input_root = "./input"
 output_dir = "./output"
-# work_root = "D:/kcc-work"
+work_root = "./.cbz2kepub-work"
 
 [conversion]
 profile = "KoLC"
@@ -58,7 +60,7 @@ cropping = 2
 keep_backup = true
 ```
 
-`title` 對應輸入的作品資料夾，也作為成品書名與系列名。每部作品一行，可用編輯器 Ctrl+/ 切換註解；`spreadshift` 調整左右頁配對起點。設定內的相對路徑以 **config.toml 所在目錄** 為基準；`work_root` 可省略，預設在 `input_root` 父目錄下的 `.cbz2kepub-work`。完整欄位與預設行為見 [config.toml 說明](docs/configuration.md#configtoml)。
+`title` 對應輸入的作品資料夾，也作為成品書名與系列名。每部作品一行，可用編輯器 Ctrl+/ 切換整行註解。 `spreadshift` 調整左右頁配對起點。設定內的相對路徑以 **config.toml 所在目錄** 為基準。省略 `work_root` 時，使用 **專案根目錄** 下的 `.cbz2kepub-work/`。完整欄位與預設行為見 [config.toml 說明](docs/configuration.md#configtoml)。
 
 ### info.json：作者與簡介
 

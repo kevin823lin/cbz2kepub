@@ -31,14 +31,14 @@ comics = [
 [paths]
 input_root = "D:/Comics"
 output_dir = "./output"
-# work_root = "D:/kcc-work"
+work_root = "./.cbz2kepub-work"
 ```
 
 | 設定 | 意義 |
 |---|---|
 | `input_root` | 每部作品讀取 `input_root/<title>/compressed/*.cbz` |
 | `output_dir` | 所有作品的共用輸出目錄，可獨立於 work_root |
-| `work_root` | 可選；預設為 input_root 父目錄下的 `.cbz2kepub-work` |
+| `work_root` | 可省略。省略時固定使用專案根目錄下的 `.cbz2kepub-work/`。明寫相對路徑時則以設定檔目錄為基準。 |
 
 三者均可為相對或絕對路徑，也可在不同磁碟區。**設定內容中的相對路徑以設定檔目錄為基準**；明確提供的相對 `--config` 路徑則以啟動工作目錄為基準。解析後傳入 KCC 的路徑皆為絕對路徑，因 KCC 啟動腳本會改變工作目錄。
 

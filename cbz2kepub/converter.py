@@ -117,7 +117,7 @@ def load_config(config_path):
             raise ValueError(f'paths.{name} 必須是非空路徑字串')
         path = Path(value).expanduser()
         paths[name] = (config_path.parent / path).resolve()
-    paths.setdefault('work_root', paths['input_root'].parent / '.cbz2kepub-work')
+    paths.setdefault('work_root', ROOT / '.cbz2kepub-work')
     comics = config['batch']['comics']
     if not isinstance(comics, list):
         raise ValueError('batch.comics 必須是陣列')

@@ -48,6 +48,10 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual([p.name for p in result['jobs'][0]['sources']], ['24.05 - A.cbz', '24.1 - B.cbz'])
         self.assertEqual(result['jobs'][0]['image_count'], 4)
 
+    def test_omitted_work_root_uses_project_with_external_config_and_input(self):
+        text = self.config_text.replace('work_root = "./.cbz2kepub-work"', '')
+        self.assertEqual(self.load(text)['paths']['work_root'], converter.ROOT / '.cbz2kepub-work')
+
     def test_unknown_key_bad_type_and_missing_sources_fail_before_conversion(self):
         for text in (self.config_text.replace('cropping =', 'croping ='),
                      self.config_text.replace('spreadshift = false', 'spreadshift = "false"'),
