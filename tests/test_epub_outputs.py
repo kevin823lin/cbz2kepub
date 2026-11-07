@@ -74,7 +74,17 @@ class EpubTests(unittest.TestCase):
         self.assertEqual(summary['series'], 'Old series')
         self.assertEqual(summary['series_index'], '99')
         self.assertEqual(summary['page_spreads'], ['page-spread-right'])
+        self.assertEqual(summary['body_layout'][0]['xhtml'], 'Package/Text/page 1.xhtml')
+        self.assertEqual(summary['body_layout'][0]['images'][0]['size'], (2, 3))
+        self.assertEqual(summary['body_layout'][0]['side'], 'right')
+        self.assertIsNone(summary['body_layout'][0]['viewport'])
         self.assertEqual(self.path.read_bytes(), original)
+
+    def test_inspection_reads_kobo_prefixed_spread_side(self):
+        rewrite(self.path, 'Package/book.opf', lambda data: data.replace(
+            b'properties="page-spread-right"', b'properties="rendition:page-spread-right"'))
+        summary = inspect_epub(self.path)
+        self.assertEqual(summary['body_layout'][0]['side'], 'right')
 
     def test_missing_resource_and_bad_fragment_fail(self):
         rewrite(self.path, "Package/Text/page 1.xhtml", lambda data: data.replace(b"kcc-0001-kcc-x.png", b"missing.png"))

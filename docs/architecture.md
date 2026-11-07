@@ -29,11 +29,13 @@ converter 的專案根路徑由模組檔案位置推算，供預設 config、KCC
 6. KCC 在第一次 ZIP 前完成封面 XHTML、第一個置中 spine 與系列卷序；wrapper 不解包重寫整本 EPUB。
 7. wrapper 驗證所有卷的 ZIP CRC、XML、資源、正文來源 ID、順序、章節導航及封面，再依數字卷號命名並發布。
 
-每卷成品硬上限 2,000,000,000 bytes；KCC 分卷目標 1850 MiB。超大章節可續至下一卷，above／below 圖片配對保持完整；單一不可分頁超過目標時報錯。
+每卷成品硬上限 2,000,000,000 bytes，KCC 分卷目標 1850 MiB。超大章可按不可拆單位續卷，包括原生 above／below 圖片和章內配對的兩個正文頁。單一單位超過目標時報錯。
+
+啟用章內配對時，KCC 在數字來源 ID 確定後逐章分析原圖。worker 取得兩頁的原生裁切候選，以共同垂直範圍和內容高度分別編碼。主程序依最終 spine 順序寫入 work 內的 `pairing.json`。wrapper 在發布前以各卷的實際圖片標頭、XHTML viewport、來源 ID 及左右頁屬性交叉核對。規格與欄位見[章內配對與共同裁切](chapter-pairing.md)。
 
 ## KCC 維護介面
 
-KCC submodule 固定在 `5f4e5ade537319829f7ced24b784d2127f0f9bd7`；`v12.1.4` tag 保留為原始基準。
+KCC 的實作版本由主專案 gitlink 指定。`v12.1.4` tag 保留為原始基準。
 
 | KCC 接點 | 本專案用途 |
 |---|---|
@@ -42,6 +44,7 @@ KCC submodule 固定在 `5f4e5ade537319829f7ced24b784d2127f0f9bd7`；`v12.1.4` t
 | `makeFusion()/makeBook()` | 帶入整本 ComicInfo；單 CBZ 覆蓋提供的欄位 |
 | `getMetadata()` | 原生 metadata 讀取，維持上游函式 |
 | `buildEPUB()` | 封裝前呼叫 `epub_helpers.finalize_epub()` |
+| `chapter_pairing`、`imgPairProcessing()` | 選用的章內基準、共同幾何與兩頁工作單位 |
 | 圖片處理與 ZIP 交界 | 呼叫容量計畫的階段預檢 |
 
 原生 metadata.py 維持不變；wrapper 省略空值，並補償固定版 parser 額外的 unescape。空／損壞內嵌 XML 回退至 wrapper XML，不吞掉無效 wrapper XML。

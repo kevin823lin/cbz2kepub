@@ -12,7 +12,7 @@ uv venv --python 3.13 .venv
 uv pip sync --python .venv/Scripts/python.exe requirements.lock
 ```
 
-已經有 `.venv` 時不必重建。程式可直接從 checkout 執行，不需要額外安裝本專案。主專案遠端尚未設定，公開 clone URL 待發布時補齊。
+已有 `.venv` 的環境可直接從 checkout 執行。
 
 ## 準備輸入
 
@@ -39,8 +39,8 @@ input_root/
 ```toml
 [batch]
 comics = [
-    { title = "範例漫畫 A", spreadshift = false },
-    # { title = "範例漫畫 B", spreadshift = true },
+    { title = "範例漫畫 A", spreadshift = false, chapter_pairing = true },
+    # { title = "範例漫畫 B", spreadshift = true, chapter_pairing = true },
 ]
 
 [paths]
@@ -60,7 +60,11 @@ cropping = 2
 keep_backup = true
 ```
 
-`title` 對應輸入的作品資料夾，也作為成品書名與系列名。每部作品一行，可用編輯器 Ctrl+/ 切換整行註解。 `spreadshift` 調整左右頁配對起點。設定內的相對路徑以 **config.toml 所在目錄** 為基準。省略 `work_root` 時，使用 **專案根目錄** 下的 `.cbz2kepub-work/`。完整欄位與預設行為見 [config.toml 說明](docs/configuration.md#configtoml)。
+`title` 對應輸入的作品資料夾，也作為成品書名與系列名。每部作品一行，可用編輯器 Ctrl+/ 切換整行註解。
+
+Kobo 作品設為 `chapter_pairing = true` 時，每章按圖片接縫決定雙頁排列。同組兩頁的上下裁切與顯示高度一致，直向仍能逐頁閱讀。未找到跨頁時，`spreadshift = false` 從第 1、2 頁成對，`true` 從第 2、3 頁成對。省略 `chapter_pairing` 或設為 `false` 會採用原生 KCC 流程。詳見[章內配對規則](docs/chapter-pairing.md)。
+
+設定內的相對路徑以 **config.toml 所在目錄** 為基準。省略 `work_root` 時，使用 **專案根目錄** 下的 `.cbz2kepub-work/`。完整欄位與預設行為見 [config.toml 說明](docs/configuration.md#configtoml)。
 
 ### info.json：作者與簡介
 

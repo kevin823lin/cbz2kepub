@@ -2,7 +2,7 @@
 
 ## 環境
 
-自有程式在 `cbz2kepub/`，使用者入口為根目錄 `main.py`。目前主專案已有本機提交，尚未設定遠端；KCC fork 已推送。主專案公開 URL 與授權選擇尚待決定，不杜撰安裝網址或 LICENSE。
+自有程式在 `cbz2kepub/`，使用者入口為根目錄 `main.py`。KCC 是獨立的 Git submodule。
 
 從主專案根目錄取得固定 submodule 與依賴：
 
@@ -40,13 +40,27 @@ KCC 測試從 `kcc/` 執行：
 
 只跑與修改相關的檢查；模組搬移須核對 import、mock 目標、專案根目錄、外部工作目錄啟動與 KCC 容量模組載入。合成 CLI 會處理圖片並啟動 KCC，不放進一般快速測試的命名範圍。
 
-完整實際資料驗收使用 `scripts/run-acceptance.ps1`，必填 SourceDir、ThreadId，可指定 ResultsRoot 與 Limits。Limits 預設 15／59／60／70；`-Limits 70` 只跑 70 章。來源是平鋪 CBZ，工具建立標準輸入 facade；只在驗收副本略過 0-byte 可選封面／JSON，正式轉檔仍嚴格檢查。
+完整實際資料驗收使用 `scripts/run-acceptance.ps1`，必填 SourceDir、ThreadId，可指定 ResultsRoot 與 Limits。Limits 預設 15／59／60／70，`-Limits 70` 只跑 70 章。SourceDir 可指向作品的 `compressed` 目錄或平鋪 CBZ 的作品目錄。工具建立獨立輸入與成品，啟用章內配對，將驗證過的報告保留在各 case 中。驗收副本會略過 0-byte 可選封面／JSON，正式轉檔仍會檢查來源。
 
 腳本在完成／失敗後 callback；等待期間不輪詢。失敗先讀 acceptance.json、acceptance.log 診斷，不自動重跑整輪。完整日誌、成品、封面與逐章對照留在忽略的 tmp，不加入公開文件。
 
+比較配對的時間與記憶體時，在 `tmp/sample.json` 指定代表章節。每個 `file` 是來源目錄內的 CBZ 檔名。
+
+```json
+{"source_dir":"D:/Comics/範例漫畫/compressed","title":"範例漫畫","selected":[{"file":"01 - 第1話.cbz"},{"file":"02 - 第2話.cbz"}]}
+```
+
+將 `source_dir` 換為實際目錄後，在專案根目錄執行以下命令。
+
+```powershell
+.\.venv\Scripts\python.exe -B scripts/benchmark_pairing.py --sample tmp/sample.json --results-root tmp/pairing-benchmark
+```
+
+使用新的或空的結果目錄，並選擇能與來源建立硬連結的磁碟區。工具先暖機兩次，再交錯量測三輪，在每次執行的目錄保留成品與日誌。`benchmark.json` 記錄總轉檔時間、KCC 階段耗時、來源雜湊與封面檢查。RSS 是每 100 ms 取樣的程序樹 RSS 總和，包含共用頁面，短暫峰值也可能落在取樣間隔內。
+
 ## KCC fork 與 submodule
 
-主專案引用 [kevin823lin/kcc](https://github.com/kevin823lin/kcc)，固定 `5f4e5ad`。`v12.1.4` tag 保留在原始基準 `370d58d`，不移動此 tag。
+主專案以 gitlink 固定 [kevin823lin/kcc](https://github.com/kevin823lin/kcc) 的版本。`v12.1.4` tag 保留在原始基準 `370d58d`。
 
 更新時先在 fork 合併上游、解決衝突並跑相關驗證，再提交／推送 KCC，最後在主專案提交新的 gitlink。一般安裝不加 `--remote`，避免跳過固定版本。有未提交修改時先保存工作。
 

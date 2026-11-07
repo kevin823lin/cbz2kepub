@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import sys
 import time
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
@@ -23,6 +24,26 @@ from cbz2kepub import converter
 def digest(path):
     with path.open('rb') as handle:
         return hashlib.file_digest(handle, 'sha256').hexdigest()
+
+
+def save_json(path, value):
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding='utf-8')
+    temporary.replace(path)
+
+
+def pairing_summary(report):
+    return {
+        'direction': report['direction'], 'target': report['target'],
+        'chapters': [{'id': chapter['id'], 'title': chapter['title'], 'mode': chapter['mode'],
+                      'reason': chapter['reason'], 'spreadshift': chapter['spreadshift'],
+                      'anchor': chapter['anchor'], 'source_ids': chapter['source_ids']} for chapter in report['chapters']],
+        'chapter_modes': {mode: sum(chapter['mode'] == mode for chapter in report['chapters'])
+                          for mode in ('paired', 'native')},
+        'groups': {mode: sum(group['mode'] == mode for group in report['groups'])
+                   for mode in ('paired', 'single', 'native')},
+        'pages': len(report['pages']),
+    }
 
 
 def verify_cover_and_metadata(path, summary, job, conversion, index, volume_count, case):
@@ -83,20 +104,38 @@ def main():
     parser.add_argument('--limits', nargs='+', type=int, default=[15, 59, 60, 70])
     arguments = parser.parse_args()
     source = arguments.source_dir.resolve()
+    title = source.parent.name if source.name.casefold() == 'compressed' else source.name
     results_root = arguments.results_root.resolve()
     results_root.mkdir(parents=True, exist_ok=True)
+    report_path = results_root / 'acceptance.json'
+    if any((results_root / f'chapters-{limit}').exists() for limit in arguments.limits):
+        raise FileExistsError('Acceptance case output already exists; choose a new results directory')
+    initial = None
+    if report_path.exists():
+        initial = json.loads(report_path.read_text(encoding='utf-8-sig'))
+        if initial.get('status') != 'running' or not all(key in initial for key in ('commit', 'dirty', 'command')):
+            raise FileExistsError('Acceptance report already exists; choose a new results directory')
     files = sorted(source.glob('*.cbz'), key=converter.chapter_key)
     if not files or any(limit < 1 or limit > len(files) for limit in arguments.limits):
         raise ValueError('Acceptance limits must refer to existing nonempty source sets')
     original_hashes = {path.name: digest(path) for path in files}
     extra_hashes = {name: digest(source / name) for name in ('cover.jpg', 'info.json') if (source / name).is_file()}
-    report = {'status': 'running', 'source_cbz_count': len(files), 'cases': []}
-    report_path = results_root / 'acceptance.json'
+    report = {'status': 'running', 'started_at': time.strftime('%Y-%m-%dT%H:%M:%S%z'),
+              'source_dir': str(source), 'title': title, 'limits': arguments.limits,
+              'chapter_pairing': True, 'source_cbz_count': len(files), 'cases': [],
+              'source_cbz_sha256': [{'name': name, 'sha256': original_hashes[name]}
+                                    for name in sorted(original_hashes)]}
+    if initial:
+        report['run_context'] = {key: initial[key] for key in
+                                 ('source_dir', 'limits', 'commit', 'dirty', 'command', 'started_at',
+                                  'kcc_commit', 'kcc_dirty') if key in initial}
+        report.update({key: initial[key] for key in ('kcc_commit', 'kcc_dirty') if key in initial})
+    save_json(report_path, report)
     try:
         for limit in arguments.limits:
             started = time.perf_counter()
             case = results_root / f'chapters-{limit}'
-            facade = case / 'input' / source.name / 'compressed'
+            facade = case / 'input' / title / 'compressed'
             facade.mkdir(parents=True)
             for path in files[:limit]:
                 try:
@@ -112,10 +151,25 @@ def main():
                     skipped.append(name)
             config_path = case / 'config.toml'
             text = (converter.ROOT / 'config.example.toml').read_text(encoding='utf-8')
-            text = text.replace('範例漫畫 A', source.name)
+            text = text.replace('範例漫畫 A', title)
+            text = text.replace('work_root = "./.cbz2kepub-work"', 'work_root = "./work"')
             config_path.write_text(text, encoding='utf-8')
             config = converter.load_config(config_path)
-            with converter.output_lock(config['paths']['output_dir']):
+            if not config['jobs'][0]['chapter_pairing']:
+                raise AssertionError('Acceptance config must enable chapter pairing')
+            captured_pairing = {}
+            validate_pairing_report = converter.validate_pairing_report
+
+            def validate_and_retain(path, summaries, job, target, direction):
+                pairing = validate_pairing_report(path, summaries, job, target, direction)
+                retained = case / 'pairing.json'
+                shutil.copy2(path, retained)
+                captured_pairing['report'] = pairing
+                captured_pairing['path'] = str(retained)
+                return pairing
+
+            with converter.output_lock(config['paths']['output_dir']), \
+                    patch.object(converter, 'validate_pairing_report', side_effect=validate_and_retain):
                 outputs = converter.convert_comic(config['jobs'][0], config)
             summaries = [inspect_epub(path) for path in outputs]
             converter.validate_book(config['jobs'][0], summaries)
@@ -125,6 +179,8 @@ def main():
             extras_unchanged = all(digest(source / name) == value for name, value in extra_hashes.items())
             if not hashes_unchanged or not extras_unchanged:
                 raise ValueError('Source archive SHA256 changed')
+            if not captured_pairing:
+                raise AssertionError('Chapter pairing validator did not run')
             report['cases'].append({
                 'chapters': limit, 'source_images': config['jobs'][0]['image_count'],
                 'body_pages': sum(item['body_pages'] for item in summaries),
@@ -133,18 +189,20 @@ def main():
                 'source_sha256_unchanged': hashes_unchanged,
                 'source_cover_metadata_sha256_unchanged': extras_unchanged,
                 'cover_metadata_checks': cover_metadata,
+                'pairing_report': captured_pairing['path'],
+                'pairing_summary': pairing_summary(captured_pairing['report']),
                 'skipped_empty_source_placeholders': skipped,
                 'elapsed_seconds': round(time.perf_counter() - started, 3),
                 'outputs': [str(path) for path in outputs],
             })
-            report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+            save_json(report_path, report)
         report['status'] = 'completed'
     except BaseException as exc:
         report['status'] = 'failed'
         report['error'] = str(exc)
         raise
     finally:
-        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
+        save_json(report_path, report)
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

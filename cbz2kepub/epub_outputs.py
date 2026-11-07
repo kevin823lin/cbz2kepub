@@ -1,7 +1,6 @@
 """Validate KCC EPUBs, then replace only outputs owned by this tool."""
 
 import hashlib
-from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -109,6 +108,7 @@ def inspect_epub(path, max_bytes=2_000_000_000):
                         raise ValueError(f"Missing EPUB fragment: {name}: {href}")
 
         body_paths, body_images, spreads = [], [], []
+        body_layout = []
         has_cover = False
         for index, itemref in enumerate(spine):
             if itemref.get("idref") not in items:
@@ -124,18 +124,31 @@ def inspect_epub(path, max_bytes=2_000_000_000):
                 has_cover = True
                 continue
             page_images = []
+            image_data = []
+            viewport = None
             for node in document.iter():
+                if node.tag.rsplit("}", 1)[-1] == "meta" and node.get("name", "").lower() == "viewport":
+                    match = re.fullmatch(r"\s*width\s*=\s*(\d+)\s*,\s*height\s*=\s*(\d+)\s*", node.get("content", ""))
+                    if match:
+                        viewport = (int(match[1]), int(match[2]))
                 if node.tag.rsplit("}", 1)[-1] in ("img", "image"):
                     href = node.get("src") or node.get("href") or node.get("{http://www.w3.org/1999/xlink}href")
                     if href:
                         image = _resolve(resource, href)
                         if image and image not in page_images:
                             page_images.append(image)
+                            with archive.open(image) as stream, Image.open(stream) as bitmap:
+                                image_data.append({"path": image, "size": bitmap.size})
             if not page_images:
                 raise ValueError(f"Body page has no local image: {resource}")
             body_paths.append(resource)
             body_images.extend(page_images)
-            spreads.append(itemref.get("properties", ""))
+            spread = itemref.get("properties", "")
+            spreads.append(spread)
+            spread_tokens = {token.rsplit(":", 1)[-1] for token in spread.split()}
+            body_layout.append({"xhtml": resource, "images": image_data, "viewport": viewport,
+                                "side": next((side for side in ("left", "right", "center")
+                                              if f"page-spread-{side}" in spread_tokens), None)})
         if not body_paths:
             raise ValueError("EPUB has no body pages")
         if len(body_paths) != len(set(body_paths)):
@@ -179,6 +192,7 @@ def inspect_epub(path, max_bytes=2_000_000_000):
             "series_index": position,
             "has_cover_page": has_cover,
             "page_spreads": spreads,
+            "body_layout": body_layout,
             "direction": spine.get("page-progression-direction"),
         }
 

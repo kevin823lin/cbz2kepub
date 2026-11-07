@@ -57,7 +57,8 @@ def page_count(size, target):
     return 2 if (width > height) != (target[0] > target[1]) and 1.16 < width / height < 1.8 else 1
 
 
-def calibrate_images(sources, target, quality=85, *, upscale=True, forcecolor=True, eraserainbow=False):
+def calibrate_images(sources, target, quality=85, *, upscale=True, forcecolor=True, eraserainbow=False,
+                     chapter_pairing=False):
     """Weight at most 24 RAM samples by their size stratum and split-page group."""
     from PIL import Image, ImageOps
     if eraserainbow:
@@ -65,7 +66,9 @@ def calibrate_images(sources, target, quality=85, *, upscale=True, forcecolor=Tr
         from types import SimpleNamespace
 
     images = []
+    wide_chapters = set()
     for source in sources:
+        source = Path(source)
         with zipfile.ZipFile(source) as archive:
             for item in archive.infolist():
                 relative = Path(item.filename)
@@ -74,14 +77,18 @@ def calibrate_images(sources, target, quality=85, *, upscale=True, forcecolor=Tr
                     continue
                 with archive.open(item) as stream, Image.open(stream) as image:
                     images.append((Path(source), item.filename, item.file_size, image.size))
+                    if image.width >= image.height:
+                        wide_chapters.add(Path(source))
     if not images:
         raise ValueError('無法校準圖片容量：沒有圖片')
     groups = {}
+    modes = ['native' if not chapter_pairing or item[0] in wide_chapters else 'paired' for item in images]
     for index, item in enumerate(images):
-        groups.setdefault(page_count(item[3], target), []).append(index)
+        pages = page_count(item[3], target) if modes[index] == 'native' else 1
+        groups.setdefault((modes[index], pages), []).append(index)
     predictions = [0] * len(images)
     maximum = samples = 0
-    for pages, indices in groups.items():
+    for (mode, pages), indices in groups.items():
         indices.sort(key=lambda index: images[index][2])
         count = min(len(indices), 24 // len(groups))
         for group in range(count):
@@ -93,7 +100,7 @@ def calibrate_images(sources, target, quality=85, *, upscale=True, forcecolor=Tr
                 if eraserainbow:
                     is_color = colorCheck(image, image.mode, SimpleNamespace(forcecolor=forcecolor, webtoon=False))
                 image = image.convert('RGB' if forcecolor and is_color else 'L')
-                if pages == 2:
+                if mode == 'native' and pages == 2:
                     width, height = image.size
                     candidates = [image.crop(box) for box in ((0, 0, width // 2, height), (width // 2, 0, width, height))]
                 else:
@@ -110,12 +117,17 @@ def calibrate_images(sources, target, quality=85, *, upscale=True, forcecolor=Tr
                             resized = ImageOps.contain(candidate, target, method=method)
                     if eraserainbow and min(resized.size) > 1:
                         resized = erase_rainbow_artifacts(resized, forcecolor and is_color)
+                    if mode == 'paired':
+                        canvas = Image.new(resized.mode, target, 255 if resized.mode == 'L' else 'white')
+                        canvas.paste(resized, ((target[0] - resized.width) // 2,
+                                               (target[1] - resized.height) // 2))
+                        resized = canvas
                     buffer = BytesIO()
                     resized.save(buffer, 'JPEG', optimize=True, quality=quality)
                     encoded += buffer.tell()
                     maximum = max(maximum, buffer.tell())
             samples += 1
-            # shortcut: cropping/gamma and unseen content remain approximate; recheck actual bytes after processing.
+            # shortcut: partner crop geometry and unseen content remain approximate; recheck actual bytes after processing.
             predicted = math.ceil(encoded * 1.25)
             for index in members:
                 predictions[index] = predicted
@@ -157,14 +169,35 @@ class SpacePlan:
         largest = min(predicted, target_bytes) + overhead
         return total + largest, total
 
+    def pairing_report_sizes(self):
+        sources = self.data.get('sources', [])
+        pages = len(self.data['images']['originals'])
+        names = [item.get('title', Path(item['path']).stem) for item in sources]
+        analyzing = 256 + pages * 128 + sum(256 + 2 * len(name.encode('utf-8')) for name in names)
+        return analyzing, analyzing + pages * 4096
+
+    def _pairing_report_exists(self):
+        return (self.work / 'pairing.json').is_file()
+
     def initial_budget(self, copied_bytes):
         images = self.data['images']
         processed = sum(images['predictions'])
         packing, output = self.packaging_peak(processed)
         processing = image_peak(images['originals'], images['predictions'], self.workers)
         sidecar = self.data.get('sidecar_bytes', 0)
-        peak = copied_bytes + self.data['cover_bytes'] + sidecar + max(self.data['expanded'] + sidecar, processing, packing)
+        stages = max(self.data['expanded'] + sidecar, processing, packing)
+        if self.data.get('chapter_pairing', False):
+            analyzing, completed = self.pairing_report_sizes()
+            stages = max(self.data['expanded'] + sidecar, processing + analyzing, packing + analyzing,
+                         output + analyzing + completed)
+        peak = copied_bytes + self.data['cover_bytes'] + sidecar + stages
         return peak, output
+
+    def before_pairing_report(self, path, new_size):
+        if type(new_size) is not int or new_size < 0:
+            raise ValueError('Pairing report size must be a non-negative integer')
+        path = self._inside_work(path)
+        require_space(path, new_size, '章節配對報告暫存預檢')
 
     def before_extract(self, source, destination):
         destination = self._inside_work(destination)
@@ -183,7 +216,14 @@ class SpacePlan:
         originals, predictions = self.data['images']['originals'], self.data['images']['predictions']
         packing, _ = self.packaging_peak(sum(predictions))
         peak = max(image_peak(originals, predictions, self.workers), packing)
-        require_space(images_dir, peak - current, '圖片處理及剩餘封裝預檢（沿用分層圖片估計）')
+        accounted = current
+        if self.data.get('chapter_pairing', False):
+            analyzing, completed = self.pairing_report_sizes()
+            _, output = self.packaging_peak(sum(predictions))
+            peak = max(peak, output + completed)
+            if not self._pairing_report_exists():
+                peak += analyzing
+        require_space(images_dir, peak - accounted, '圖片處理及剩餘封裝預檢（沿用分層圖片估計）')
 
     def before_zip(self, tome, zipfilename):
         tome, output = self._inside_work(tome), self._inside_work(zipfilename)
@@ -213,9 +253,16 @@ class SpacePlan:
             peak = max(peak, occupancy + overhead + archive)
             occupancy += archive - size
             output_bytes += archive
+        needed = max(0, peak - present)
+        if self.data.get('chapter_pairing', False):
+            analyzing, completed = self.pairing_report_sizes()
+            peak = max(peak, output_bytes + completed)
+            if not self._pairing_report_exists():
+                peak += analyzing
+            needed = max(0, peak - present)
         print(f'圖片處理完成預檢：實際分卷工作資料 {present:,} bytes，{len(sizes)} 卷；'
-              f'work 後續最大新增約 {peak - present:,} bytes（直接封裝一次）', flush=True)
-        require_space(self.work, peak - present, '實際圖片完成後的剩餘封裝預檢')
+              f'work 後續最大新增 {needed:,} bytes（直接封裝一次）', flush=True)
+        require_space(self.work, needed, '實際圖片完成後的剩餘封裝預檢')
         output = Path(self.data['output_dir'])
         if not same_volume(self.work, output):
             require_space(output, output_bytes, '實際圖片完成後的 output 容量預檢')

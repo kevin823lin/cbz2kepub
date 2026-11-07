@@ -1,4 +1,5 @@
-from io import BytesIO
+from io import BytesIO, StringIO
+from contextlib import redirect_stdout
 from itertools import product
 from pathlib import Path
 from types import SimpleNamespace
@@ -232,6 +233,146 @@ class SpaceTests(unittest.TestCase):
             space.calibrate_images([source], (100, 150), upscale=False, forcecolor=False)
             space.calibrate_images([source], (100, 150), upscale=True, forcecolor=True)
         self.assertEqual(saved, [((30, 60), 'L'), ((75, 150), 'RGB')])
+
+    def test_pairing_flag_off_matches_default_estimate(self):
+        source = self.work / 'source.cbz'
+        with zipfile.ZipFile(source, 'w') as archive:
+            for index, size in enumerate(((30, 50), (60, 40), (40, 60), (50, 80))):
+                buffer = BytesIO()
+                Image.new('RGB', size, (index * 60, 40, 100)).save(buffer, 'PNG')
+                archive.writestr(f'{index}.png', buffer.getvalue())
+        self.assertEqual(space.calibrate_images([source], (100, 150)),
+                         space.calibrate_images([source], (100, 150), chapter_pairing=False))
+
+    def test_paired_estimate_pads_fixed_canvas_without_upscaling(self):
+        source = self.work / 'source.cbz'
+        with zipfile.ZipFile(source, 'w') as archive:
+            buffer = BytesIO()
+            Image.new('RGB', (30, 60), 'red').save(buffer, 'PNG')
+            archive.writestr('page.png', buffer.getvalue())
+        saved = []
+        save = Image.Image.save
+
+        def record(image, *args, **kwargs):
+            saved.append((image.size, image.getpixel((20, 45)), image.getpixel((50, 45))))
+            return save(image, *args, **kwargs)
+
+        with patch.object(Image.Image, 'save', record):
+            result = space.calibrate_images([source], (100, 150), upscale=False, chapter_pairing=True)
+        self.assertEqual(saved, [((100, 150), (255, 255, 255), (255, 0, 0))])
+        self.assertEqual(result['samples'], 1)
+        self.assertEqual(len(result['predictions']), 1)
+
+    def test_wide_chapter_keeps_its_portrait_pages_native(self):
+        source = self.work / 'source.cbz'
+        with zipfile.ZipFile(source, 'w') as archive:
+            for name, size in (('portrait.png', (30, 60)), ('wide.png', (80, 80))):
+                buffer = BytesIO()
+                Image.new('RGB', size, 'red').save(buffer, 'PNG')
+                archive.writestr(name, buffer.getvalue())
+        saved = []
+        save = Image.Image.save
+
+        def record(image, *args, **kwargs):
+            saved.append(image.size)
+            return save(image, *args, **kwargs)
+
+        with patch.object(Image.Image, 'save', record):
+            result = space.calibrate_images([source], (100, 150), upscale=False, chapter_pairing=True)
+        self.assertEqual(saved, [(30, 60), (80, 80)])
+        self.assertEqual(result['samples'], 2)
+
+    def test_pairing_samples_are_stratified_separately_and_stay_under_budget(self):
+        source = self.work / 'source.cbz'
+        portrait = self.work / 'portrait.cbz'
+        with zipfile.ZipFile(portrait, 'w') as archive:
+            for index in range(48):
+                buffer = BytesIO()
+                Image.new('RGB', (80, 150), 'white').save(buffer, 'PNG')
+                archive.writestr(f'{index:02}.png', buffer.getvalue())
+        native = self.work / 'native.cbz'
+        with zipfile.ZipFile(native, 'w') as archive:
+            for index in range(24):
+                buffer = BytesIO()
+                Image.new('RGB', (80, 150), 'white').save(buffer, 'PNG')
+                archive.writestr(f'{index:02}.png', buffer.getvalue())
+            for index in range(24, 48):
+                buffer = BytesIO()
+                Image.new('RGB', (150, 100), 'white').save(buffer, 'PNG')
+                archive.writestr(f'{index:02}.png', buffer.getvalue())
+        with patch.object(space, 'page_count', side_effect=lambda size, target: 2 if size == (80, 150) else 1) as count:
+            result = space.calibrate_images([portrait, native], (100, 150), chapter_pairing=True)
+        self.assertLessEqual(result['samples'], 24)
+        self.assertEqual(len(result['predictions']), 96)
+        self.assertEqual(result['samples'], 24)
+        self.assertEqual(count.call_count, 48)
+
+    def test_pairing_report_temp_checks_only_the_new_bytes_inside_work(self):
+        plan = space.SpacePlan(self.data)
+        report_temp = self.work / 'pairing.json.tmp'
+        (self.work / 'pairing.json').write_bytes(b'old report already occupies space')
+        with patch.object(space, 'require_space') as check:
+            plan.before_pairing_report(report_temp, 1234)
+        self.assertEqual(check.call_args.args[:2], (report_temp.resolve(), 1234))
+        self.assertIn('報告暫存', check.call_args.args[2])
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            plan.before_pairing_report(self.work.parent / 'outside.tmp', 1234)
+        with self.assertRaisesRegex(ValueError, 'non-negative'):
+            plan.before_pairing_report(report_temp, -1)
+
+    def test_pairing_report_is_included_in_initial_peak_and_uses_utf8_names(self):
+        self.data['chapter_pairing'] = True
+        self.data['sources'] = [dict(path=str(self.work / '第一章.cbz'), title='第一章')]
+        self.data['images'] = dict(page_bytes=0, originals=[1], predictions=[0])
+        self.data.update(expanded=0, cover_bytes=0, target_bytes=1000)
+        disabled_peak, _ = space.SpacePlan({**self.data, 'chapter_pairing': False}).initial_budget(0)
+        plan = space.SpacePlan(self.data)
+        enabled_peak, _ = plan.initial_budget(0)
+        analyzing, completed = plan.pairing_report_sizes()
+        self.assertEqual(completed, analyzing + 4096)
+        self.assertEqual(analyzing, 256 + 128 + 256 + 2 * len('第一章'.encode('utf-8')))
+        _, output = plan.packaging_peak(sum(self.data['images']['predictions']))
+        self.assertGreaterEqual(enabled_peak, output + analyzing + completed)
+        self.assertGreater(enabled_peak, disabled_peak)
+
+    def test_completed_report_estimate_grows_with_pages_within_same_chapter(self):
+        self.data['chapter_pairing'] = True
+        self.data['sources'] = [dict(path=str(self.work / 'chapter.cbz'), title='章')]
+        self.data['images'] = dict(page_bytes=0, originals=[1], predictions=[0])
+        one_page = space.SpacePlan(self.data).pairing_report_sizes()
+        self.data['images']['originals'] = [1] * 5
+        five_pages = space.SpacePlan(self.data).pairing_report_sizes()
+        self.assertEqual(five_pages[1] - one_page[1], 4 * (4096 + 128))
+
+    def test_before_images_charges_only_report_bytes_not_already_present(self):
+        self.data['chapter_pairing'] = True
+        self.data['sources'] = [dict(path=str(self.work / 'chapter.cbz'))]
+        self.data['images'] = dict(page_bytes=0, originals=[100], predictions=[100])
+        report = self.work / 'pairing.json'
+        report.write_text('{"state":"analyzing"}', encoding='utf-8')
+        plan = space.SpacePlan(self.data)
+        with patch.object(space, 'image_peak', return_value=100), \
+                patch.object(space.SpacePlan, 'packaging_peak', return_value=(0, 700)), \
+                patch.object(space, 'require_space') as check:
+            plan.before_images(self.images)
+        self.assertEqual(check.call_args.args[1], 700 + plan.pairing_report_sizes()[1])
+
+    def test_after_images_reserves_analyzing_and_completed_report_without_output_charge(self):
+        self.data['chapter_pairing'] = True
+        self.data['sources'] = [dict(path=str(self.work / 'chapter.cbz'))]
+        self.data['images'] = dict(page_bytes=0, originals=[1], predictions=[0])
+        empty_tome = self.work / 't' / 'empty'
+        empty_tome.mkdir()
+        plan = space.SpacePlan(self.data)
+        printed = StringIO()
+        with patch.object(space, 'require_space') as check:
+            with redirect_stdout(printed):
+                plan.after_images([empty_tome])
+        analyzing, completed = plan.pairing_report_sizes()
+        self.assertEqual(check.call_args.args[0], self.work.resolve())
+        self.assertEqual(check.call_args.args[1], analyzing + completed)
+        self.assertEqual(len(check.call_args_list), 1)
+        self.assertIn(f'work 後續最大新增 {check.call_args.args[1]:,} bytes', printed.getvalue())
 
     def test_split_estimate_matches_default_kcc_landscape_thresholds(self):
         self.assertEqual(space.page_count((110, 100), (100, 150)), 1)

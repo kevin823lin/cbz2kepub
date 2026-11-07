@@ -20,7 +20,7 @@ class WrapperTests(unittest.TestCase):
         self.source = self.root / 'input' / 'Demo' / 'compressed'
         self.source.mkdir(parents=True)
         self.config_path = self.root / 'config.toml'
-        self.config_text = (converter.ROOT / 'config.example.toml').read_text(encoding='utf-8').replace('範例漫畫 A', 'Demo')
+        self.config_text = (converter.ROOT / 'config.example.toml').read_text(encoding='utf-8').replace('範例漫畫 A', 'Demo').replace(', chapter_pairing = true', '')
         self.config_path.write_text(self.config_text, encoding='utf-8')
         self.add_cbz('24.1 - B.cbz')
         self.add_cbz('24.05 - A.cbz')
@@ -59,6 +59,14 @@ class WrapperTests(unittest.TestCase):
                      self.config_text.replace('"Demo"', '"../Demo"')):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 self.load(text)
+
+    def test_chapter_pairing_defaults_off_and_requires_boolean(self):
+        config = self.load()
+        self.assertFalse(config['jobs'][0]['chapter_pairing'])
+        text = self.config_text.replace('spreadshift = false', 'spreadshift = false, chapter_pairing = true', 1)
+        self.assertTrue(self.load(text)['jobs'][0]['chapter_pairing'])
+        with self.assertRaisesRegex(ValueError, 'chapter_pairing'):
+            self.load(text.replace('chapter_pairing = true', 'chapter_pairing = "true"'))
 
     def test_empty_list_does_not_require_input_folder(self):
         text = self.config_text.replace('    { title =', '    # { title =')
@@ -115,6 +123,7 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(command[1], str(converter.ROOT / 'kcc' / 'kcc-c2e.py'))
         self.assertNotIn('--filefusion', command)
         self.assertNotIn('--spreadshift', command)
+        self.assertNotIn('--chapter-pairing', command)
         self.assertIn('--forcecolor', command)
         self.assertIn('--manga-style', command)
         job['spreadshift'] = True
@@ -122,6 +131,9 @@ class WrapperTests(unittest.TestCase):
         command = converter.build_command(job, config['conversion'], [Path('s/a.cbz'), Path('s/b.cbz')], self.root)
         self.assertIn('--filefusion', command)
         self.assertIn('--spreadshift', command)
+        job['chapter_pairing'] = True
+        command = converter.build_command(job, config['conversion'], [Path('s/a.cbz')], self.root)
+        self.assertIn('--chapter-pairing', command)
         self.assertEqual(command[command.index('--author') + 1], 'Author')
 
     def test_kcc_output_is_displayed_and_saved_as_it_arrives_on_failure(self):
@@ -235,6 +247,27 @@ class WrapperTests(unittest.TestCase):
         self.assertEqual(plan.return_value.initial_budget.call_args.args[0],
                          sum(path.stat().st_size for path in config['jobs'][0]['sources']))
         self.assertEqual(list(config['paths']['work_root'].iterdir()), [])
+
+    def test_changing_pairing_recalibrates_image_budget(self):
+        config = self.load()
+        job = config['jobs'][0]
+        calibration = dict(page_bytes=100, sample_bytes=80, samples=1,
+                           originals=[11] * 4, predictions=[100] * 4)
+        with patch.object(converter, 'calibrate_images', return_value=calibration) as calibrate:
+            job['chapter_pairing'] = False
+            converter.prepare_space(job, config, converter.TARGET_MIB)
+            job['chapter_pairing'] = True
+            converter.prepare_space(job, config, converter.TARGET_MIB)
+            converter.prepare_space(job, config, converter.TARGET_MIB)
+        self.assertEqual([call.kwargs['chapter_pairing'] for call in calibrate.call_args_list], [False, True])
+
+    def test_pairing_with_kindle_profile_fails_during_initial_preflight(self):
+        config = self.load()
+        config['jobs'][0]['chapter_pairing'] = True
+        config['conversion']['profile'] = 'K1'
+        with patch.object(converter, 'calibrate_images') as calibrate, self.assertRaisesRegex(ValueError, 'Kobo'):
+            converter.prepare_space(config['jobs'][0], config, converter.TARGET_MIB)
+        calibrate.assert_not_called()
 
     def test_large_metadata_and_generated_xml_have_separate_byte_budgets(self):
         config = self.load()

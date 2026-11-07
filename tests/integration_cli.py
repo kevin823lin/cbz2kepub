@@ -41,7 +41,8 @@ class CliIntegrationTests(unittest.TestCase):
         self.description = '中文簡介 & < > &amp;\n'
         (self.source / 'info.json').write_text(json.dumps({'title': '不同來源名', 'author': self.author, 'description': self.description}), encoding='utf-8')
         self.config_path = self.root / 'config.toml'
-        text = (converter.ROOT / 'config.example.toml').read_text(encoding='utf-8').replace('範例漫畫 A', '測試漫畫')
+        text = (converter.ROOT / 'config.example.toml').read_text(encoding='utf-8').replace(
+            '範例漫畫 A', '測試漫畫').replace('chapter_pairing = true', 'chapter_pairing = false')
         self.config_path.write_text(text, encoding='utf-8')
 
     def tearDown(self):
@@ -86,6 +87,78 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(info['authors'], [self.author])
         self.assertEqual(info['description'], self.description)
         self.assertEqual(info['series'], '測試漫畫')
+
+    def pairing_case(self, chapters):
+        for path in self.source.glob('*.cbz'):
+            path.unlink()
+        self.hashes = {}
+        for name, entries in chapters:
+            path = self.source / f'{name}.cbz'
+            with zipfile.ZipFile(path, 'w') as archive:
+                for filename, size, seed in entries:
+                    pixels = random.Random(seed).randbytes(size[0] * size[1] * 3)
+                    buffer = BytesIO()
+                    Image.frombytes('RGB', size, pixels).save(buffer, 'PNG')
+                    archive.writestr(filename, buffer.getvalue())
+            self.hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        text = self.config_path.read_text(encoding='utf-8').replace('chapter_pairing = false', 'chapter_pairing = true')
+        self.config_path.write_text(text, encoding='utf-8')
+
+    def convert_capturing_pairing_report(self, config, target_mib=10):
+        captured = {}
+        validate = converter.validate_pairing_report
+
+        def save_report(path, summaries, job, target, direction):
+            report = validate(path, summaries, job, target, direction)
+            captured['report'] = json.loads(Path(path).read_text(encoding='utf-8'))
+            captured['target'] = target
+            captured['direction'] = direction
+            return report
+
+        with converter.output_lock(config['paths']['output_dir']), \
+                patch.object(converter, 'validate_pairing_report', side_effect=save_report):
+            outputs = converter.convert_comic(config['jobs'][0], config, target_mib=target_mib)
+        return outputs, captured
+
+    def test_pairing_single_nested_cbz_reports_one_chapter(self):
+        self.pairing_case([('50 - Nested', [(f'chapter/{int(index > 1)}/{index:03}.png', (160, 240), index)
+                                             for index in range(1, 5)])])
+        config = converter.load_config(self.config_path)
+        outputs, captured = self.convert_capturing_pairing_report(config)
+        report = captured['report']
+        self.assertTrue(config['jobs'][0]['chapter_pairing'])
+        self.assertEqual(len(report['chapters']), 1)
+        self.assertEqual(report['chapters'][0]['title'], '50 - Nested')
+        self.assertEqual(report['chapters'][0]['source_ids'], [1, 2, 3, 4])
+        self.assertEqual(len(report['groups']), 2)
+        self.assertEqual(len(report['pages']), 4)
+        self.check_metadata(outputs)
+
+    def test_pairing_fusion_fallback_and_forced_volume_split_keep_pairs_together(self):
+        self.pairing_case([
+            ('01 - Long', [(f'{index:03}.png', (160, 240), index) for index in range(1, 13)]),
+            ('02 - Wide', [('nested/wide.png', (320, 200), 101)]),
+            ('03 - Mixed', [(f'{index:03}.png', size, 200 + index)
+                            for index, size in ((1, (160, 240)), (2, (160, 320)), (3, (160, 240)))]),
+        ])
+        config = converter.load_config(self.config_path)
+        outputs, captured = self.convert_capturing_pairing_report(config, target_mib=2)
+        report = captured['report']
+        self.assertGreater(len(outputs), 1)
+        self.assertEqual([chapter['title'] for chapter in report['chapters']],
+                         ['01 - Long', '02 - Wide', '03 - Mixed'])
+        wide = report['chapters'][1]
+        self.assertEqual((wide['mode'], wide['reason']), ('native', 'wide_image'))
+        self.assertGreater(sum(page['source_id'] == wide['source_ids'][0] for page in report['pages']), 1)
+        page_by_group = {}
+        for page in report['pages']:
+            page_by_group.setdefault(page['group_id'], []).append(page)
+        for group in report['groups']:
+            if group['mode'] == 'paired':
+                pages = page_by_group[group['id']]
+                self.assertEqual([page['source_id'] for page in pages], group['source_ids'])
+                self.assertEqual(len({page['tome'] for page in pages}), 1)
+        self.check_metadata(outputs)
 
     def test_single_source_keeps_embedded_metadata_when_book_fields_are_missing_or_empty(self):
         sources = list(self.source.glob('*.cbz'))

@@ -10,13 +10,44 @@ if (-not $ResultsRoot) {
     $ResultsRoot = Join-Path $projectRoot ('tmp\acceptance-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
 }
 New-Item -ItemType Directory -Path $ResultsRoot -Force | Out-Null
+$ResultsRoot = (Resolve-Path -LiteralPath $ResultsRoot).Path
+$SourceDir = (Resolve-Path -LiteralPath $SourceDir).Path
 $logPath = Join-Path $ResultsRoot 'acceptance.log'
 $statePath = Join-Path $ResultsRoot 'runner.json'
-$state = [ordered]@{ status = 'running'; pid = $PID; started = (Get-Date).ToString('o'); log = $logPath }
-$state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding utf8
+$acceptanceReportPath = Join-Path $ResultsRoot 'acceptance.json'
+if ((Test-Path -LiteralPath $statePath) -or (Test-Path -LiteralPath $acceptanceReportPath) -or
+    (Get-ChildItem -LiteralPath $ResultsRoot -Directory -Filter 'chapters-*' | Select-Object -First 1)) {
+    throw 'Acceptance results already exist; choose a new results directory to preserve them'
+}
+$acceptancePath = Join-Path $projectRoot 'tests\acceptance_real.py'
+$pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
+$commit = (& git -c "safe.directory=$projectRoot" -C $projectRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not read startup commit' }
+$kccRoot = Join-Path $projectRoot 'kcc'
+$kccCommit = (& git -c "safe.directory=$kccRoot" -C $kccRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Could not read startup KCC commit' }
+$dirtyLines = @(& git -c "safe.directory=$projectRoot" -C $projectRoot status --porcelain)
+if ($LASTEXITCODE -ne 0) { throw 'Could not read startup working tree state' }
+$dirty = $dirtyLines.Count -gt 0
+$kccDirtyLines = @(& git -c "safe.directory=$kccRoot" -C $kccRoot status --porcelain)
+if ($LASTEXITCODE -ne 0) { throw 'Could not read startup KCC working tree state' }
+$kccDirty = $kccDirtyLines.Count -gt 0
+$started = (Get-Date).ToString('o')
+$command = @($pythonPath, '-B', $acceptancePath, '--source-dir', $SourceDir,
+    '--results-root', $ResultsRoot, '--limits') + @($Limits | ForEach-Object { $_.ToString() })
+$state = [ordered]@{ status = 'running'; pid = $PID; started = $started; log = $logPath; source_dir = $SourceDir;
+    limits = @($Limits); commit = $commit; dirty = $dirty; kcc_commit = $kccCommit; kcc_dirty = $kccDirty; command = $command }
+function Write-JsonAtomic([string]$Path, $Value) {
+    $tempPath = $Path + '.tmp'
+    [System.IO.File]::WriteAllText($tempPath, ($Value | ConvertTo-Json -Depth 20), [System.Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $tempPath -Destination $Path -Force
+}
+Write-JsonAtomic $statePath $state
+$initialAcceptance = [ordered]@{ status = 'running'; source_dir = $SourceDir; limits = @($Limits);
+    commit = $commit; dirty = $dirty; kcc_commit = $kccCommit; kcc_dirty = $kccDirty;
+    command = $command; started_at = $started; cases = @() }
+Write-JsonAtomic (Join-Path $ResultsRoot 'acceptance.json') $initialAcceptance
 try {
-    $pythonPath = Join-Path $projectRoot '.venv\Scripts\python.exe'
-    $acceptancePath = Join-Path $projectRoot 'tests\acceptance_real.py'
     $env:PYTHONUTF8 = '1'
     [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
     $OutputEncoding = [Console]::OutputEncoding
@@ -30,8 +61,8 @@ try {
     Add-Content -LiteralPath $logPath -Value $_.Exception.Message -Encoding utf8
 } finally {
     $state['finished'] = (Get-Date).ToString('o')
-    $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding utf8
-    $message = "【cbz2kepub migration acceptance callback】狀態：$($state.status)。$($Limits -join '/') 章依序執行；結果：$ResultsRoot\acceptance.json；日誌：$logPath。請讀取結果完成驗收，核對封面閱讀頁與 metadata；失敗先診斷，不自動重跑整輪。"
+    Write-JsonAtomic $statePath $state
+    $message = "【cbz2kepub chapter-pairing acceptance callback】狀態：$($state.status)。$($Limits -join '/') 章依序執行；結果：$ResultsRoot\acceptance.json；日誌：$logPath。請核對配對章/組摘要與報告，以及封面和metadata；失敗先診斷，不自動重跑整輪。"
     try {
         $codex = Get-ChildItem -LiteralPath "$env:LOCALAPPDATA\OpenAI\Codex\bin" -Filter codex.exe -File -Recurse |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -40,7 +71,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Callback failed: exit $LASTEXITCODE" }
     } catch {
         $state['callbackError'] = $_.Exception.Message
-        $state | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding utf8
+        Write-JsonAtomic $statePath $state
         throw
     }
 }

@@ -1,6 +1,6 @@
 # 章內配對與共同裁切
 
-狀態：待實作／驗證。這是已接受的實作規格；不可把規劃當作驗收結果。
+每章採用同一種雙頁排列。兩張圖片各自保留原生左右裁切，並使用相同的內容高度，供 Kobo 直向逐頁、橫向並排閱讀。實測範圍見[驗證結果](validation.md)。
 
 ## 使用方式與相容性
 
@@ -97,15 +97,7 @@ calibrate_images 增加 keyword chapter_pairing=False；cache key包含此值。
 不計RAM、不預留合圖/額外來源副本/第二份EPUB；處理後仍依實際 bytes 重檢。
 space_preflight.py 仍可按絕對檔案獨立載入，不新增套件相對 import。
 
-## 工作包與驗收順序
-
-P0 root先保存此規格及 .agent/scratch/chapter-pairing 接續資料。
-K1 sol_worker 依序 A辨識/幾何、B圖片、C分卷/spine；同一負責者掌握KCC接點。
-W1 luna_worker wrapper設定/命令/報告驗證，與K1-A並行。
-S1 luna_specialist 容量模組及測試，與K1-B並行；converter呼叫端仍由W1/root整合。
-V1 luna_worker CLI整合/背景驗收/效能工具，待K1-C完成。
-R1 root整體驗收、文件、提交與gitlink。最多兩個實作worker，均為leaf，不自行commit/push。
-精確所有權及當前狀態放忽略的 task 檔，不放正式技術文件。
+## 驗收
 
 測試：原設定相容、兩種基準、early-stop、無候選、RTL/LTR、不同高度、crop0/1/2、
 upscale=false、合成跨頁線條、寬圖回退、孤頁、兩條分卷路徑、超大pair拒絕、實際報告/資源比對。

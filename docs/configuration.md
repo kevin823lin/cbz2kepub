@@ -16,14 +16,18 @@
 ```toml
 [batch]
 comics = [
-    { title = "範例漫畫 A", spreadshift = false },
-    # { title = "範例漫畫 B", spreadshift = true },
+    { title = "範例漫畫 A", spreadshift = false, chapter_pairing = true },
+    # { title = "範例漫畫 B", spreadshift = true, chapter_pairing = true },
 ]
 ```
 
 每部漫畫使用一行 inline table，讓編輯器 Ctrl+/ 能切換整行註解。程式只處理未註解的項目，依清單順序逐部執行；全部註解時不轉檔。一部失敗就停止後續作品。
 
-`title` 是單一作品資料夾名稱，也作為書名、系列名及成品命名來源，不能包含路徑或跳出 `input_root`。`spreadshift` 必須是布林，調整左右頁配對起點，不依封面存在與否自動反轉，也不修復兩張單頁各自裁切造成的接縫。
+`title` 是單一作品資料夾名稱，也作為書名、系列名及成品命名來源，不能包含路徑或跳出 `input_root`。`spreadshift` 是必填布林值，控制兩頁配對的起點。
+
+`chapter_pairing` 是選用布林值，省略時為 `false`，使用 KCC 原生配對與裁切。設為 `true` 時，Kobo EPUB 會從每章相鄰頁的接縫取樣，依第一個符合條件的頁對決定整章排列。沒有候選時依 `spreadshift` 排列：`false` 從第 1、2 頁成對，`true` 從第 2、3 頁成對。獨立封面不計入章內頁碼。
+
+每組仍輸出兩張獨立圖片，縱向逐頁閱讀，橫向依左右頁標記並排。上下裁切按來源高度比例同步，左右沿用各自的裁切範圍。同組使用相同內容高度與畫布，兩張頁面保留在同一卷。章內含橫向或正方形圖片時，該章採原生 KCC 處理。辨識與裁切的完整規則見[章內配對](chapter-pairing.md)。
 
 ### 路徑與來源
 

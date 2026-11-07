@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from decimal import Decimal
 from html import escape as html_escape
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -124,13 +125,16 @@ def load_config(config_path):
     jobs = []
     stems = []
     for comic in comics:
-        check_keys(comic, ('title', 'spreadshift'), label='comics 項目')
+        check_keys(comic, ('title', 'spreadshift'), ('chapter_pairing',), 'comics 項目')
         title = comic['title']
         if (not isinstance(title, str) or not title.strip() or title in ('.', '..') or
                 any(c in title for c in '/\\\x00') or Path(title).name != title):
             raise ValueError('title 必須是單一作品資料夾名稱')
         if type(comic['spreadshift']) is not bool:
             raise ValueError(f'{title}: spreadshift 必須是 true 或 false')
+        if type(comic.get('chapter_pairing', False)) is not bool:
+            raise ValueError(f'{title}: chapter_pairing 必須是 true 或 false')
+        comic.setdefault('chapter_pairing', False)
         stem = safe_stem(title)
         for previous in stems:
             a, b = previous.casefold(), stem.casefold()
@@ -191,6 +195,8 @@ def build_command(job, conversion, staged_sources, output_dir, target_mib=TARGET
             command.append('--' + flag.replace('_', '-'))
     if job['spreadshift']:
         command.append('--spreadshift')
+    if job.get('chapter_pairing', False):
+        command.append('--chapter-pairing')
     if job['metadata'].get('author'):
         command.extend(('--author', job['metadata']['author']))
     if len(staged_sources) > 1:
@@ -261,6 +267,184 @@ def validate_book(job, summaries):
         raise ValueError('成品來源圖片序號有缺漏或額外頁面')
 
 
+def validate_pairing_report(path, summaries, job, target, direction):
+    """Validate the v1 report against the completed EPUBs before publication."""
+    try:
+        report = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f'章內配對報告缺失或無效：{path}') from exc
+    if (not isinstance(report, dict) or type(report.get('version')) is not int or report.get('version') != 1
+            or report.get('state') != 'completed'
+            or report.get('target') != list(target) or report.get('direction') != direction
+            or not all(isinstance(report.get(key), list) for key in ('chapters', 'groups', 'pages'))):
+        raise ValueError('章內配對報告頂層欄位與本次轉檔不符')
+    chapters, groups, pages = report['chapters'], report['groups'], report['pages']
+    if len(chapters) != len(job['sources']):
+        raise ValueError('報告章節數與 CBZ 來源數不符')
+    chapter_by_id = {}
+    next_source = 1
+    for index, chapter in enumerate(chapters, 1):
+        if (not isinstance(chapter, dict) or type(chapter.get('id')) is not int or chapter.get('id') != index
+                or not isinstance(chapter.get('title'), str) or chapter.get('mode') not in ('paired', 'native')
+                or type(chapter.get('spreadshift')) is not bool
+                or chapter.get('reason') not in ('detected', 'spreadshift', 'wide_image')):
+            raise ValueError('章內配對報告含無效章節')
+        if chapter['title'] != job['sources'][index - 1].stem:
+            raise ValueError('報告章節名稱與來源不符')
+        if ((chapter['mode'] == 'native') != (chapter['reason'] == 'wide_image')
+                or (chapter['reason'] == 'detected' and chapter['mode'] != 'paired')):
+            raise ValueError('報告章節 mode/reason 不一致')
+        if chapter['reason'] != 'detected' and chapter['spreadshift'] != job['spreadshift']:
+            raise ValueError('報告章節 spreadshift 與作品設定不符')
+        source_ids = chapter.get('source_ids')
+        if (not isinstance(source_ids, list) or not source_ids
+                or any(type(source_id) is not int for source_id in source_ids)
+                or source_ids != list(range(next_source, next_source + len(source_ids)))):
+            raise ValueError('報告章節來源 ID 不連續或順序錯誤')
+        anchor = chapter.get('anchor')
+        if chapter['reason'] == 'detected':
+            if (not isinstance(anchor, dict) or anchor.get('source_ids') not in
+                    [chapter['source_ids'][index:index + 2] for index in range(len(chapter['source_ids']) - 1)]
+                    or type(anchor.get('score')) not in (int, float) or not math.isfinite(anchor['score'])
+                    or not 0 <= anchor['score'] < 30):
+                raise ValueError('報告偵測章節缺少有效 anchor')
+            if chapter['spreadshift'] != ((anchor['source_ids'][0] - chapter['source_ids'][0]) % 2 == 1):
+                raise ValueError('偵測 anchor 起點與 spreadshift 不符')
+        elif anchor is not None:
+            raise ValueError('非偵測章節 anchor 必須為 null')
+        next_source += len(source_ids)
+        chapter_by_id[index] = chapter
+    counts = [item['image_count'] for item in (job.get('archive_stats') or [])]
+    if counts and [chapter['source_ids'] for chapter in chapters] != _source_ranges(counts):
+        raise ValueError('報告章節來源範圍與 CBZ 章節圖片數不符')
+    if next_source != job['image_count'] + 1:
+        raise ValueError('報告章節未完整涵蓋來源圖片')
+    group_by_id = {}
+    for index, group in enumerate(groups, 1):
+        if (not isinstance(group, dict) or type(group.get('id')) is not int or group.get('id') != index
+                or type(group.get('chapter_id')) is not int or group['chapter_id'] not in chapter_by_id
+                or group.get('mode') not in ('paired', 'single', 'native')):
+            raise ValueError('章內配對報告含無效組')
+        source_ids = group.get('source_ids')
+        chapter = chapter_by_id[group['chapter_id']]
+        if (not isinstance(source_ids, list) or not source_ids
+                or any(type(source_id) is not int or source_id not in chapter['source_ids'] for source_id in source_ids)
+                or len(source_ids) != len(set(source_ids))
+                or source_ids != sorted(source_ids)
+                or (group['mode'] == 'paired' and len(source_ids) != 2)
+                or (group['mode'] != 'paired' and len(source_ids) != 1)
+                or (chapter['mode'] == 'native') != (group['mode'] == 'native')):
+            raise ValueError('報告組來源 ID 或模式無效')
+        group_by_id[index] = group
+    actual = []
+    for tome, summary in enumerate(summaries, 1):
+        for item in summary['body_layout']:
+            for image in item['images']:
+                match = re.search(r'kcc-(\d+)-kcc-', PurePosixPath(image['path']).name)
+                if match:
+                    actual.append((tome, item['xhtml'], image['path'], int(match[1]), image['size'], item['viewport'], item['side']))
+    actual_map = {(row[1], row[2]): (position, row) for position, row in enumerate(actual)}
+    page_keys = []
+    page_positions = []
+    group_pages = {group_id: [] for group_id in group_by_id}
+    for page in pages:
+        if (not isinstance(page, dict) or type(page.get('source_id')) is not int
+                or type(page.get('group_id')) is not int or page['group_id'] not in group_by_id
+                or type(page.get('tome')) is not int or page.get('side') not in ('left', 'right', 'center')):
+            raise ValueError('章內配對報告含無效正文頁')
+        group = group_by_id[page['group_id']]
+        actual_entry = actual_map.get((page.get('xhtml'), page.get('image')))
+        if actual_entry is None:
+            raise ValueError('報告正文頁與 EPUB 資源不符')
+        position, row = actual_entry
+        if row[0] != page['tome'] or row[3] != page['source_id']:
+            raise ValueError('報告正文頁與 EPUB 資源／卷號／來源 ID 不符')
+        if (page.get('image_size') != list(row[4]) or page.get('viewport') != (list(row[5]) if row[5] else None)
+                or page['side'] != row[6] or page['source_id'] not in group['source_ids']):
+            raise ValueError('報告尺寸、viewport、頁側或組來源與 EPUB 不符')
+        if group['mode'] == 'paired':
+            geometry = page.get('geometry')
+            if (not isinstance(geometry, dict)
+                    or not isinstance(geometry.get('crop_box'), list) or len(geometry['crop_box']) != 4
+                    or not isinstance(geometry.get('offset'), list) or len(geometry['offset']) != 2
+                    or not isinstance(geometry.get('rendered_size'), list) or len(geometry['rendered_size']) != 2
+                    or any(type(value) is not int for value in geometry['crop_box'])
+                    or not (geometry['crop_box'][0] >= 0 and geometry['crop_box'][1] >= 0
+                            and geometry['crop_box'][2] > geometry['crop_box'][0]
+                            and geometry['crop_box'][3] > geometry['crop_box'][1])
+                    or any(type(value) is not int for value in geometry['rendered_size'] + geometry['offset'])
+                    or not (0 < geometry['rendered_size'][0] <= target[0]
+                            and 0 < geometry['rendered_size'][1] <= target[1])
+                    or not (0 <= geometry['offset'][0] <= target[0] - geometry['rendered_size'][0]
+                            and 0 <= geometry['offset'][1] <= target[1] - geometry['rendered_size'][1])
+                    or page['image_size'] != list(target) or page['viewport'] != list(target)):
+                raise ValueError('paired 報告缺少有效共同幾何')
+        elif page.get('geometry') is not None:
+            raise ValueError('非 paired 頁 geometry 必須為 null')
+        page_keys.append((page['xhtml'], page['image']))
+        page_positions.append(position)
+        group_pages[page['group_id']].append((page, row, position))
+    if (len(page_keys) != len(set(page_keys)) or set(page_keys) != set(actual_map)
+            or page_positions != sorted(page_positions)):
+        raise ValueError('報告正文頁未與 EPUB 資源一對一完整對應')
+    for group_id, entries in group_pages.items():
+        group = group_by_id[group_id]
+        if not entries:
+            raise ValueError('報告組沒有正文頁')
+        if group['mode'] == 'paired' and len(entries) != 2:
+            raise ValueError('paired 組必須包含兩個正文頁')
+        source_order = [entry[0]['source_id'] for entry in entries]
+        if group['mode'] == 'paired':
+            expected_sides = ('right', 'left') if direction == 'rtl' else ('left', 'right')
+            first_geometry, second_geometry = (entry[0]['geometry'] for entry in entries)
+            first_size, second_size = first_geometry['rendered_size'], second_geometry['rendered_size']
+            first_offset, second_offset = first_geometry['offset'], second_geometry['offset']
+            first_x = 0 if direction == 'rtl' else target[0] - first_size[0]
+            second_x = target[0] - second_size[0] if direction == 'rtl' else 0
+            if (source_order != group['source_ids'] or entries[0][1][0] != entries[1][1][0]
+                    or entries[1][2] != entries[0][2] + 1
+                    or tuple(entry[0]['side'] for entry in entries) != expected_sides
+                    or first_size[1] != second_size[1] or first_offset[1] != second_offset[1]
+                    or (first_offset[0], second_offset[0]) != (first_x, second_x)):
+                raise ValueError('paired 組必須按來源順序相鄰且位於同卷')
+        if sorted({entry[0]['source_id'] for entry in entries}) != group['source_ids']:
+            raise ValueError('報告組未完整涵蓋其來源 ID')
+        if group['mode'] == 'single' and any(entry[0]['side'] != 'center' for entry in entries):
+            raise ValueError('single 頁必須置中')
+    for chapter_id, chapter in chapter_by_id.items():
+        chapter_groups = [group for group in groups if group['chapter_id'] == chapter_id]
+        chapter_sources = [source_id for group in chapter_groups for source_id in group['source_ids']]
+        if sorted(chapter_sources) != chapter['source_ids']:
+            raise ValueError('章節組未完整且唯一涵蓋章來源 ID')
+        expected = []
+        source_ids = chapter['source_ids']
+        if chapter['mode'] == 'native':
+            expected = [(source_id, 'native') for source_id in source_ids]
+        else:
+            cursor = 0
+            if chapter['spreadshift']:
+                expected.append((source_ids[0], 'single'))
+                cursor = 1
+            while cursor + 1 < len(source_ids):
+                expected.append((source_ids[cursor:cursor + 2], 'paired'))
+                cursor += 2
+            if cursor < len(source_ids):
+                expected.append((source_ids[cursor], 'single'))
+        if [(group['source_ids'] if len(group['source_ids']) == 2 else group['source_ids'][0], group['mode'])
+                for group in chapter_groups] != expected:
+            raise ValueError('報告組與章節 spreadshift 分組不符')
+    return report
+
+
+def _source_ranges(counts):
+    start = 1
+    ranges = []
+    for count in counts:
+        ranges.append(list(range(start, start + count)))
+        start += count
+    return ranges
+
+
 @contextmanager
 def output_lock(output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -279,18 +463,22 @@ def output_lock(output_dir):
 
 def prepare_space(job, config, target_mib):
     conversion = config['conversion']
-    key = (*sorted(conversion.items()), target_mib)
+    chapter_pairing = job.get('chapter_pairing', False)
+    key = (*sorted(conversion.items()), target_mib, chapter_pairing)
     if job.get('_space_key') == key:
         return job['_space_data']
     sys.path.insert(0, str(ROOT / 'kcc'))
     try:
         from kindlecomicconverter.image import ProfileData
+        if chapter_pairing and conversion['profile'] not in ProfileData.ProfilesKobo:
+            raise ValueError('章內配對需要 Kobo profile')
         target = ProfileData.Profiles[conversion['profile']][1]
         if min(target) <= 0:
             raise ValueError('容量預檢需要有固定解析度的 profile')
         quality = 90 if conversion['profile'].startswith('KS') or conversion['profile'] == 'KCS' else 85
         images = calibrate_images(job['sources'], target, quality, upscale=conversion['upscale'],
-                                  forcecolor=conversion['forcecolor'], eraserainbow=conversion['eraserainbow'])
+                                  forcecolor=conversion['forcecolor'], eraserainbow=conversion['eraserainbow'],
+                                  chapter_pairing=chapter_pairing)
     except KeyError as exc:
         raise ValueError(f'未知的 KCC profile：{conversion["profile"]}') from exc
     finally:
@@ -302,7 +490,7 @@ def prepare_space(job, config, target_mib):
     if len(job['sources']) == 1:
         metadata_bytes += stats[0]['comic_info_bytes']
     data = dict(version=1, work=str(config['paths']['work_root']), output_dir=str(config['paths']['output_dir']), target=list(target),
-                target_bytes=int(target_mib * 1024 * 1024), images=images,
+                target_bytes=int(target_mib * 1024 * 1024), images=images, chapter_pairing=chapter_pairing,
                 metadata_bytes=metadata_bytes, sidecar_bytes=len(comic_info_bytes(job)),
                 expanded=sum(item['expanded'] for item in stats),
                 sources=[dict(path=str(path), expanded=item['expanded']) for path, item in zip(job['sources'], stats)],
@@ -402,6 +590,11 @@ def convert_comic(job, config, target_mib=TARGET_MIB):
                            PYTHONUTF8='1', PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1', QT_QPA_PLATFORM='offscreen',
                            CBZ2KEPUB_SPACE_PLAN=str(plan_path),
                            CBZ2KEPUB_SPACE_MODULE=str(Path(__file__).resolve().with_name('space_preflight.py')))
+        pairing_report = work / 'pairing.json'
+        if job.get('chapter_pairing', False):
+            environment['CBZ2KEPUB_PAIRING_REPORT'] = str(pairing_report)
+        else:
+            environment.pop('CBZ2KEPUB_PAIRING_REPORT', None)
         run_kcc(command, work, environment)
         files = ordered_outputs(output)
         summaries = []
@@ -415,6 +608,9 @@ def convert_comic(job, config, target_mib=TARGET_MIB):
                 path.rename(destination)
             renamed.append(destination)
         validate_book(job, summaries)
+        if job.get('chapter_pairing', False):
+            direction = 'rtl' if config['conversion']['manga_style'] else 'ltr'
+            validate_pairing_report(pairing_report, summaries, job, data['target'], direction)
         result = publish_outputs(renamed, config['paths']['output_dir'], job['stem'], work_title=job['title'], keep_backup=keep_backup)
         print(f'完成 {job["title"]}：{len(result)} 卷，{sum(item["body_pages"] for item in summaries)} 個正文頁', flush=True)
     except BaseException:

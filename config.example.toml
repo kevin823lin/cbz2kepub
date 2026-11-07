@@ -3,9 +3,9 @@
 
 [batch]
 comics = [
-    { title = "範例漫畫 A", spreadshift = false },
-    # { title = "範例漫畫 B", spreadshift = true },
-    # { title = "範例漫畫 C", spreadshift = false },
+    { title = "範例漫畫 A", spreadshift = false, chapter_pairing = true },
+    # { title = "範例漫畫 B", spreadshift = true, chapter_pairing = true },
+    # { title = "範例漫畫 C", spreadshift = false, chapter_pairing = true },
 ]
 
 [paths]

@@ -2,6 +2,8 @@
 
 本檔只保存後續修改需要知道的原因；操作方式以 docs 為準，不追加一般任務日誌。
 
+- **章內配對。** 一個來源 CBZ 採一種配對基準。第一組通過接縫評分的頁對即可決定章首奇偶；其餘頁對共同計算垂直裁切與內容高度，讓未再辨識的跨頁也能對齊。左右裁切保留各頁原生候選，接受可能裁掉接縫的取捨。以來源 ID 貫穿 worker、分卷及 spine，避免依賴暫存檔名或平行工作的完成順序。見[章內配對規格](../docs/chapter-pairing.md)。
+
 - **根目錄入口與套件：** 使用 `main.py` 啟動 `cbz2kepub.converter.main()`，自有程式集中在套件，第三方依賴留在 `.venv`。目前用途是從 checkout 轉檔，採根目錄套件即可，不增加 editable install、打包後端或多個 CLI。
 - **KCC fork 加 submodule：** fork 保存必要修改，主專案固定 commit，避免安裝時重複套 patch。基底 v12.1.4 tag 不移動；合併上游後先驗證／推送 KCC，再更新主專案指標。兩者各自管理版本，不把 wrapper 混進 KCC。
 - **沿用 ComicInfo 與原生 reader：** wrapper 本來就能從設定／info.json 產生 ComicInfo XML，不新增 metadata CLI／JSON 通道。固定版 parser 額外 unescape 的相容處理由產生端補償，空值省略；不要擴大改寫 metadata.py。單檔缺欄位保留有效內嵌值，損壞內嵌 XML 才回退 wrapper XML。
