@@ -40,18 +40,19 @@ RTL 比較前頁左側、後頁右側；LTR 反向。透明像素以白底合成
 裁後 ri=widthi/heighti；共同內容高度=floor(min(H,W/max(r1,r2)))。
 upscale=false 再限制共同高度不超過任一裁後高度。各頁內容寬=floor(ri*共同高度)，至少1像素。
 任一頁縮小用 LANCZOS，否則 BICUBIC。共同處理頁不再進單頁 fit/contain 或 splitCheck。
-原生 gamma/contrast/color/eraserainbow 逐頁保留，內容濾鏡完成後補成 profile W×H。
-上下同位置；RTL 第一頁靠左、第二頁靠右；LTR 相反；外側補原生背景色。
-每頁編碼一次，無合圖中間檔。孤頁/native 章走原流程。
+原生 gamma/contrast/color/eraserainbow 逐頁保留。濾鏡完成後直接編碼成實際內容尺寸，JPEG 的寬高同時用作該頁 XHTML 的 viewport。profile 的 W×H 是縮放上限，兩個成對頁可以異寬，但內容高度一致。
+RTL 第一頁標為右頁、第二頁標為左頁，LTR 相反。閱讀器依頁側標記組合跨頁。純直頁章的孤頁置中，以等比例 contain 縮放至 profile 範圍內。含寬圖或正方形圖片的章節維持 KCC 原生的裁切、拆頁、旋轉與縮放。
 每個 pair worker 順序處理兩頁，避免同時持有兩套大型濾鏡陣列；沿用現有 worker 數。
 
-## 報告契約 v1（跨 worker 固定）
+## 配對報告 v2
+
+v2 的成對頁必須滿足 `image_size == viewport == geometry.rendered_size`，且同組兩頁等高。v1 記錄的是固定畫布內的內容位置，重新核對歷史 v1 報告時請使用產生該報告的版本。
 
 JSON 由 parent 寫入，worker 不寫共享檔；檔案以暫存後 replace 更新。
 頂層：
-- version: 1
+- version: 2
 - state: "analyzing" 或 "completed"；只有所有卷完成後才能 completed
-- target: [W,H]
+- target: [W,H]，表示輸出尺寸上限
 - direction: "rtl" 或 "ltr"
 - chapters: 章節陣列
 - groups: 組陣列
@@ -77,7 +78,7 @@ pages 每筆（依最終閱讀順序；native 同一 source_id 可以多個資�
 - tome: 從1開始卷號
 - side: "left"、"right"、"center"（最終實際 spine）
 - image_size: [w,h]；viewport: [w,h] 或 null（僅 native 可缺）
-- geometry: paired 為 {"crop_box":[l,t,r,b],"rendered_size":[w,h],"offset":[x,y]}，其他 null
+- geometry: paired 為 {"crop_box":[l,t,r,b],"rendered_size":[w,h]}，其他 null
 
 不把 worker 回呼完成順序當閱讀順序；全局來源ID保持既有命名。
 組/章內不得跨 source ID 範圍、不重複、不跳頁。native 拆頁保留一對多。
@@ -89,11 +90,11 @@ helper 完成封面與系列資料後套配對章頁側，native 章不覆蓋。
 分卷保護每組 paired，不僅 anchor；兩條逐頁分卷路徑和原生 above/below 都需保護。
 整組超過 targetSize 明確報錯。目錄改短或攤平不影響來源ID。
 wrapper 保留 CRC/XML/資源/章節/metadata/封面/正文來源ID與順序驗證。
-另外核對報告 completed、章來源範圍、實際相鄰/同卷/頁側、paired尺寸和viewport、孤頁center。
+另外核對報告 completed、章來源範圍、實際相鄰／同卷／頁側與成品圖片尺寸。每個孤頁組只對應一個置中頁，其 viewport 等於該張圖片尺寸。
 
 calibrate_images 增加 keyword chapter_pairing=False；cache key包含此值。
 仍使用既有分層抽樣、25%樣本餘裕及32MiB操作餘裕，不新增全域倍數。
-配對抽樣反映固定畫布；寬圖章維持原生模擬。初始抽樣仍非完整幾何上界。
+配對抽樣將等比例縮放後的內容直接試編碼。寬圖章維持原生模擬。初始抽樣是容量近似值。
 不計RAM、不預留合圖/額外來源副本/第二份EPUB；處理後仍依實際 bytes 重檢。
 space_preflight.py 仍可按絕對檔案獨立載入，不新增套件相對 import。
 

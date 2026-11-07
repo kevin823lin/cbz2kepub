@@ -31,7 +31,7 @@ converter 的專案根路徑由模組檔案位置推算，供預設 config、KCC
 
 每卷成品硬上限 2,000,000,000 bytes，KCC 分卷目標 1850 MiB。超大章可按不可拆單位續卷，包括原生 above／below 圖片和章內配對的兩個正文頁。單一單位超過目標時報錯。
 
-啟用章內配對時，KCC 在數字來源 ID 確定後逐章分析原圖。worker 取得兩頁的原生裁切候選，以共同垂直範圍和內容高度分別編碼。主程序依最終 spine 順序寫入 work 內的 `pairing.json`。wrapper 在發布前以各卷的實際圖片標頭、XHTML viewport、來源 ID 及左右頁屬性交叉核對。規格與欄位見[章內配對與共同裁切](chapter-pairing.md)。
+啟用章內配對時，KCC 在數字來源 ID 確定後逐章分析原圖。worker 取得兩頁的原生裁切候選，以共同垂直範圍和內容高度分別編碼。XHTML 以各張圖片的實際寬高宣告 viewport。主程序依最終 spine 順序寫入 work 內的 `pairing.json`。wrapper 在發布前以各卷的實際圖片標頭、XHTML viewport、來源 ID 及左右頁屬性交叉核對。規格與欄位見[章內配對與共同裁切](chapter-pairing.md)。
 
 ## KCC 維護介面
 

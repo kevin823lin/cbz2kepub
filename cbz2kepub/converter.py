@@ -268,12 +268,12 @@ def validate_book(job, summaries):
 
 
 def validate_pairing_report(path, summaries, job, target, direction):
-    """Validate the v1 report against the completed EPUBs before publication."""
+    """Validate the v2 report against the completed EPUBs before publication."""
     try:
         report = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f'章內配對報告缺失或無效：{path}') from exc
-    if (not isinstance(report, dict) or type(report.get('version')) is not int or report.get('version') != 1
+    if (not isinstance(report, dict) or type(report.get('version')) is not int or report.get('version') != 2
             or report.get('state') != 'completed'
             or report.get('target') != list(target) or report.get('direction') != direction
             or not all(isinstance(report.get(key), list) for key in ('chapters', 'groups', 'pages'))):
@@ -364,20 +364,18 @@ def validate_pairing_report(path, summaries, job, target, direction):
             raise ValueError('報告尺寸、viewport、頁側或組來源與 EPUB 不符')
         if group['mode'] == 'paired':
             geometry = page.get('geometry')
-            if (not isinstance(geometry, dict)
+            if (not isinstance(geometry, dict) or set(geometry) != {'crop_box', 'rendered_size'}
                     or not isinstance(geometry.get('crop_box'), list) or len(geometry['crop_box']) != 4
-                    or not isinstance(geometry.get('offset'), list) or len(geometry['offset']) != 2
                     or not isinstance(geometry.get('rendered_size'), list) or len(geometry['rendered_size']) != 2
                     or any(type(value) is not int for value in geometry['crop_box'])
                     or not (geometry['crop_box'][0] >= 0 and geometry['crop_box'][1] >= 0
                             and geometry['crop_box'][2] > geometry['crop_box'][0]
                             and geometry['crop_box'][3] > geometry['crop_box'][1])
-                    or any(type(value) is not int for value in geometry['rendered_size'] + geometry['offset'])
+                    or any(type(value) is not int for value in geometry['rendered_size'])
                     or not (0 < geometry['rendered_size'][0] <= target[0]
                             and 0 < geometry['rendered_size'][1] <= target[1])
-                    or not (0 <= geometry['offset'][0] <= target[0] - geometry['rendered_size'][0]
-                            and 0 <= geometry['offset'][1] <= target[1] - geometry['rendered_size'][1])
-                    or page['image_size'] != list(target) or page['viewport'] != list(target)):
+                    or page['image_size'] != geometry['rendered_size']
+                    or page['viewport'] != geometry['rendered_size']):
                 raise ValueError('paired 報告缺少有效共同幾何')
         elif page.get('geometry') is not None:
             raise ValueError('非 paired 頁 geometry 必須為 null')
@@ -398,19 +396,18 @@ def validate_pairing_report(path, summaries, job, target, direction):
             expected_sides = ('right', 'left') if direction == 'rtl' else ('left', 'right')
             first_geometry, second_geometry = (entry[0]['geometry'] for entry in entries)
             first_size, second_size = first_geometry['rendered_size'], second_geometry['rendered_size']
-            first_offset, second_offset = first_geometry['offset'], second_geometry['offset']
-            first_x = 0 if direction == 'rtl' else target[0] - first_size[0]
-            second_x = target[0] - second_size[0] if direction == 'rtl' else 0
             if (source_order != group['source_ids'] or entries[0][1][0] != entries[1][1][0]
                     or entries[1][2] != entries[0][2] + 1
                     or tuple(entry[0]['side'] for entry in entries) != expected_sides
-                    or first_size[1] != second_size[1] or first_offset[1] != second_offset[1]
-                    or (first_offset[0], second_offset[0]) != (first_x, second_x)):
+                    or first_size[1] != second_size[1]):
                 raise ValueError('paired 組必須按來源順序相鄰且位於同卷')
         if sorted({entry[0]['source_id'] for entry in entries}) != group['source_ids']:
             raise ValueError('報告組未完整涵蓋其來源 ID')
-        if group['mode'] == 'single' and any(entry[0]['side'] != 'center' for entry in entries):
-            raise ValueError('single 頁必須置中')
+        if group['mode'] == 'single':
+            page = entries[0][0]
+            if (len(entries) != 1 or page['side'] != 'center' or page['image_size'] != page['viewport']
+                    or not (0 < page['image_size'][0] <= target[0] and 0 < page['image_size'][1] <= target[1])):
+                raise ValueError('single 頁須對應一個置中頁，且 viewport 等於 profile 內圖片尺寸')
     for chapter_id, chapter in chapter_by_id.items():
         chapter_groups = [group for group in groups if group['chapter_id'] == chapter_id]
         chapter_sources = [source_id for group in chapter_groups for source_id in group['source_ids']]

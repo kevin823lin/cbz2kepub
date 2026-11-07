@@ -81,7 +81,7 @@ KCC v12.1.4 採 ISC，保留其版權及授權聲明；主專案的最終授權�
 ## 發布前尚需完成
 
 1. 決定主專案遠端與授權，從可取得的乾淨 clone 重建固定環境。
-2. 完成 Kobo 實機閱讀、傳書後 metadata 與全面畫質驗收。
+2. 補驗傳書後的 metadata 與整本漫畫畫質。已完成的 Kobo 直向／橫向 A/B 實測見[驗證結果](validation.md)。
 3. 若提供 GitHub source ZIP，說明它不含完整 submodule；若提供完整 release 包，再設計其打包流程。
 
 目前沒有新增自動打包系統；驗證狀態以 [validation.md](validation.md) 為準。

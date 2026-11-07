@@ -244,7 +244,7 @@ class SpaceTests(unittest.TestCase):
         self.assertEqual(space.calibrate_images([source], (100, 150)),
                          space.calibrate_images([source], (100, 150), chapter_pairing=False))
 
-    def test_paired_estimate_pads_fixed_canvas_without_upscaling(self):
+    def test_paired_estimate_keeps_contained_content_without_padding(self):
         source = self.work / 'source.cbz'
         with zipfile.ZipFile(source, 'w') as archive:
             buffer = BytesIO()
@@ -254,14 +254,32 @@ class SpaceTests(unittest.TestCase):
         save = Image.Image.save
 
         def record(image, *args, **kwargs):
-            saved.append((image.size, image.getpixel((20, 45)), image.getpixel((50, 45))))
+            saved.append((image.size, image.getpixel((20, 45))))
             return save(image, *args, **kwargs)
 
         with patch.object(Image.Image, 'save', record):
             result = space.calibrate_images([source], (100, 150), upscale=False, chapter_pairing=True)
-        self.assertEqual(saved, [((100, 150), (255, 255, 255), (255, 0, 0))])
+        self.assertEqual(saved, [((30, 60), (255, 0, 0))])
         self.assertEqual(result['samples'], 1)
         self.assertEqual(len(result['predictions']), 1)
+
+    def test_near_profile_aspect_fit_remains_native_only(self):
+        source = self.work / 'source.cbz'
+        with zipfile.ZipFile(source, 'w') as archive:
+            buffer = BytesIO()
+            Image.new('RGB', (62, 100), 'red').save(buffer, 'PNG')
+            archive.writestr('page.png', buffer.getvalue())
+        saved = []
+        save = Image.Image.save
+
+        def record(image, *args, **kwargs):
+            saved.append(image.size)
+            return save(image, *args, **kwargs)
+
+        with patch.object(Image.Image, 'save', record):
+            space.calibrate_images([source], (100, 160), chapter_pairing=False)
+            space.calibrate_images([source], (100, 160), chapter_pairing=True)
+        self.assertEqual(saved, [(100, 160), (99, 160)])
 
     def test_wide_chapter_keeps_its_portrait_pages_native(self):
         source = self.work / 'source.cbz'

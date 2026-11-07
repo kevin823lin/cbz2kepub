@@ -111,17 +111,12 @@ def calibrate_images(sources, target, quality=85, *, upscale=True, forcecolor=Tr
                     resized = candidate
                     if upscale or candidate.width > target[0] or candidate.height > target[1]:
                         method = Image.Resampling.BICUBIC if candidate.width <= target[0] and candidate.height <= target[1] else Image.Resampling.LANCZOS
-                        if abs(candidate.height / candidate.width - target[1] / target[0]) < 0.015:
+                        if mode == 'native' and abs(candidate.height / candidate.width - target[1] / target[0]) < 0.015:
                             resized = ImageOps.fit(candidate, target, method=method)
                         else:
                             resized = ImageOps.contain(candidate, target, method=method)
                     if eraserainbow and min(resized.size) > 1:
                         resized = erase_rainbow_artifacts(resized, forcecolor and is_color)
-                    if mode == 'paired':
-                        canvas = Image.new(resized.mode, target, 255 if resized.mode == 'L' else 'white')
-                        canvas.paste(resized, ((target[0] - resized.width) // 2,
-                                               (target[1] - resized.height) // 2))
-                        resized = canvas
                     buffer = BytesIO()
                     resized.save(buffer, 'JPEG', optimize=True, quality=quality)
                     encoded += buffer.tell()

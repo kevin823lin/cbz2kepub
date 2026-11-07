@@ -19,23 +19,23 @@ class PairingReportTests(unittest.TestCase):
         }
         self.summaries = [{
             'body_layout': [
-                {'xhtml': 'Text/1.xhtml', 'images': [{'path': 'Images/kcc-0001-kcc-x.jpg', 'size': (100, 150)}], 'viewport': (100, 150), 'side': 'right'},
-                {'xhtml': 'Text/2.xhtml', 'images': [{'path': 'Images/kcc-0002-kcc-x.jpg', 'size': (100, 150)}], 'viewport': (100, 150), 'side': 'left'},
+                {'xhtml': 'Text/1.xhtml', 'images': [{'path': 'Images/kcc-0001-kcc-x.jpg', 'size': (80, 120)}], 'viewport': (80, 120), 'side': 'right'},
+                {'xhtml': 'Text/2.xhtml', 'images': [{'path': 'Images/kcc-0002-kcc-x.jpg', 'size': (90, 120)}], 'viewport': (90, 120), 'side': 'left'},
             ]
         }]
         self.report = {
-            'version': 1, 'state': 'completed', 'target': [100, 150], 'direction': 'rtl',
+            'version': 2, 'state': 'completed', 'target': [100, 150], 'direction': 'rtl',
             'chapters': [{'id': 1, 'title': '24.05 - A', 'source_ids': [1, 2], 'mode': 'paired',
                           'spreadshift': False, 'reason': 'detected',
                           'anchor': {'source_ids': [1, 2], 'score': 12.5}}],
             'groups': [{'id': 1, 'chapter_id': 1, 'source_ids': [1, 2], 'mode': 'paired'}],
             'pages': [
                 {'source_id': 1, 'group_id': 1, 'image': 'Images/kcc-0001-kcc-x.jpg', 'xhtml': 'Text/1.xhtml',
-                 'tome': 1, 'side': 'right', 'image_size': [100, 150], 'viewport': [100, 150],
-                 'geometry': {'crop_box': [0, 0, 100, 150], 'rendered_size': [80, 120], 'offset': [0, 15]}},
+                 'tome': 1, 'side': 'right', 'image_size': [80, 120], 'viewport': [80, 120],
+                 'geometry': {'crop_box': [0, 0, 100, 150], 'rendered_size': [80, 120]}},
                 {'source_id': 2, 'group_id': 1, 'image': 'Images/kcc-0002-kcc-x.jpg', 'xhtml': 'Text/2.xhtml',
-                 'tome': 1, 'side': 'left', 'image_size': [100, 150], 'viewport': [100, 150],
-                 'geometry': {'crop_box': [0, 0, 100, 150], 'rendered_size': [80, 120], 'offset': [20, 15]}},
+                 'tome': 1, 'side': 'left', 'image_size': [90, 120], 'viewport': [90, 120],
+                 'geometry': {'crop_box': [0, 0, 100, 150], 'rendered_size': [90, 120]}},
             ],
         }
 
@@ -56,15 +56,23 @@ class PairingReportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '頂層'):
             self.validate()
 
+    def test_v1_and_v2_with_padding_offsets_are_rejected(self):
+        self.report['version'] = 1
+        with self.assertRaisesRegex(ValueError, '頂層'):
+            self.validate()
+        self.report['version'] = 2
+        self.report['pages'][0]['geometry']['offset'] = [0, 0]
+        with self.assertRaisesRegex(ValueError, '共同幾何'):
+            self.validate()
+
     def test_report_must_match_geometry_resources_and_page_sides(self):
         for mutate, error in (
             (lambda: self.report.update(target=[101, 150]), '頂層'),
             (lambda: self.report['pages'][0].update(image='Images/missing.jpg'), '資源'),
             (lambda: self.report['pages'][0].update(side='left'), '頁側'),
             (lambda: self.report['pages'][1].update(tome=2), '卷號'),
-            (lambda: self.report['pages'][1].update(viewport=[99, 150]), '尺寸'),
-            (lambda: self.report['pages'][1]['geometry'].update(offset=[0, 15]), '相鄰'),
-            (lambda: self.report['pages'][1]['geometry'].update(rendered_size=[80, 119]), '相鄰'),
+            (lambda: self.report['pages'][1].update(viewport=[99, 120]), '尺寸'),
+            (lambda: self.report['pages'][1]['geometry'].update(rendered_size=[89, 120]), '共同幾何'),
             (lambda: self.report['chapters'][0]['anchor'].update(score=float('nan')), 'anchor'),
         ):
             with self.subTest(error=error):
@@ -72,6 +80,15 @@ class PairingReportTests(unittest.TestCase):
                 mutate()
                 with self.assertRaisesRegex(ValueError, error):
                     self.validate()
+
+    def test_paired_content_may_have_different_widths_but_must_share_height(self):
+        self.report['pages'][1]['image_size'] = [90, 119]
+        self.report['pages'][1]['viewport'] = [90, 119]
+        self.report['pages'][1]['geometry']['rendered_size'] = [90, 119]
+        self.summaries[0]['body_layout'][1]['images'][0]['size'] = (90, 119)
+        self.summaries[0]['body_layout'][1]['viewport'] = (90, 119)
+        with self.assertRaisesRegex(ValueError, '相鄰'):
+            self.validate()
 
     def test_pair_must_be_adjacent_in_same_volume_in_reading_order(self):
         self.summaries[0]['body_layout'].reverse()
@@ -94,6 +111,14 @@ class PairingReportTests(unittest.TestCase):
             for index, suffix in ((1, 'a'), (2, 'b'))
         ]
         self.assertEqual(self.validate()['state'], 'completed')
+
+        self.report['chapters'][0].update(mode='paired', reason='spreadshift')
+        self.report['groups'][0]['mode'] = 'single'
+        for page, layout in zip(self.report['pages'], self.summaries[0]['body_layout']):
+            page['viewport'] = page['image_size']
+            layout['viewport'] = tuple(page['image_size'])
+        with self.assertRaisesRegex(ValueError, '一個置中頁'):
+            self.validate()
 
     def test_single_pages_require_center_spread(self):
         self.job['archive_stats'] = [{'image_count': 1}]
@@ -128,14 +153,13 @@ class PairingReportTests(unittest.TestCase):
             paired = group_id == 2
             self.summaries[0]['body_layout'].append({
                 'xhtml': xhtml, 'images': [{'path': image, 'size': (100, 150)}],
-                'viewport': (100, 150) if paired else None, 'side': side,
+                'viewport': (100, 150), 'side': side,
             })
             self.report['pages'].append({
                 'source_id': source_id, 'group_id': group_id, 'image': image, 'xhtml': xhtml,
                 'tome': 1, 'side': side, 'image_size': [100, 150],
-                'viewport': [100, 150] if paired else None,
-                'geometry': ({'crop_box': [0, 0, 100, 150], 'rendered_size': [80, 120],
-                              'offset': [0 if side == 'right' else 20, 15]} if paired else None),
+                'viewport': [100, 150],
+                'geometry': ({'crop_box': [0, 0, 100, 150], 'rendered_size': [100, 150]} if paired else None),
             })
         self.assertEqual(self.validate()['state'], 'completed')
 
