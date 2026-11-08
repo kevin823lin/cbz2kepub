@@ -46,6 +46,16 @@ class PairingReportTests(unittest.TestCase):
     def test_valid_pairing_report_matches_epub(self):
         self.assertEqual(self.validate()['state'], 'completed')
 
+    def test_strip_anchor_has_a_distinct_score_range(self):
+        anchor = self.report['chapters'][0]['anchor']
+        anchor.update(method='strip', score=0.968)
+        self.assertEqual(self.validate()['chapters'][0]['anchor'], anchor)
+        for method, score in [('strip', 12.5), ('strip', 0.2), ('unknown', 0.99)]:
+            with self.subTest(method=method, score=score):
+                anchor.update(method=method, score=score)
+                with self.assertRaisesRegex(ValueError, 'anchor'):
+                    self.validate()
+
     def test_missing_malformed_or_analyzing_report_fails(self):
         with self.assertRaisesRegex(ValueError, '缺失或無效'):
             validate_pairing_report(self.path, self.summaries, self.job, (100, 150), 'rtl')

@@ -305,9 +305,11 @@ def validate_pairing_report(path, summaries, job, target, direction):
         if chapter['reason'] == 'detected':
             if (not isinstance(anchor, dict) or anchor.get('source_ids') not in
                     [chapter['source_ids'][index:index + 2] for index in range(len(chapter['source_ids']) - 1)]
-                    or type(anchor.get('score')) not in (int, float) or not math.isfinite(anchor['score'])
-                    or not 0 <= anchor['score'] < 30):
+                    or type(anchor.get('score')) not in (int, float) or not math.isfinite(anchor['score'])):
                 raise ValueError('報告偵測章節缺少有效 anchor')
+            method, score = anchor.get('method', 'rgb'), anchor['score']
+            if not ((method == 'rgb' and 0 <= score < 30) or (method == 'strip' and 0.93 <= score <= 1)):
+                raise ValueError('報告 anchor 的方法或分數無效')
             if chapter['spreadshift'] != ((anchor['source_ids'][0] - chapter['source_ids'][0]) % 2 == 1):
                 raise ValueError('偵測 anchor 起點與 spreadshift 不符')
         elif anchor is not None:

@@ -11,7 +11,7 @@ wrapper 傳 `--chapter-pairing`，並用 `CBZ2KEPUB_PAIRING_REPORT` 指定本次
 每個 CBZ 是一章；單 CBZ 的巢狀目錄仍是一章。Fusion 以各 CBZ 頂層目錄分章。
 sanitizeTree 後依數字來源 ID 排序。獨立封面不算正文。
 章內任一原圖 width >= height，整章 native 回退並記錄，不與其他章混用。
-其他章掃描相鄰頁，第一合格候選決定整章基準後停止：
+其他章掃描相鄰頁，由第一組通過 RGB 評分的候選決定整章基準。整章都沒有 RGB 候選時，才採用合格的條帶候選。
 - 起點為第 1/3/5 頁：spreadshift=false，12|34|56。
 - 起點為第 2/4/6 頁：spreadshift=true，1|23|45。
 - 無候選使用作品 spreadshift，仍共同處理所有頁對。
@@ -28,7 +28,13 @@ RTL 比較前頁左側、後頁右側；LTR 反向。透明像素以白底合成
 平均每點 RGB 絕對差之和 <30。兩邊皆有 >=80% 樣本的各 channel >220 則拒絕；
 兩邊皆有 >=80% 樣本的各 channel <50 則拒絕；
 兩邊灰階亮度 variance 均 <100 則拒絕。亮度權重 .299/.587/.114。
-取樣重用小資料，不留整章像素。候選分數不是準確率或信心百分比。
+條帶取樣沿用相同閱讀方向。將接縫兩側各 8 像素寬的區域轉成白底灰階，以 BOX 縮放各取 50 段平均亮度。
+
+- 若兩側各有至少 40 段亮度高於 220，或各有至少 40 段低於 50，排除該頁對。
+- 全高的 Pearson 相關係數須至少 0.93，平均亮度絕對差最多 16。
+- 至少 15 段的兩側亮度都須落在 20 到 235 之間。這些段落兩側的亮度變異數各須至少 100，相關係數須至少 0.80，避免僅因頁框和留白相似而配對。
+
+程式在原圖已解碼時順便取條帶樣本。記住第一個合格條帶候選後，只繼續檢查 RGB；即使後面才遇到 RGB 候選，也優先採用它。日誌用 `RGB distance` 和 `strip correlation` 區別兩種分數。全章僅保留相鄰頁的小型樣本與候選位置。兩種分數都不表示辨識準確率。
 使用與原生圖片處理一致的來源方向，不另加入 EXIF 自動旋轉功能。
 
 ## 共同幾何
@@ -64,7 +70,7 @@ chapters 每筆：
 - mode: "paired" 或 "native"
 - spreadshift: 實際採用 bool（native 仍記 fallback 設定）
 - reason: "detected"、"spreadshift"、"wide_image"
-- anchor: null 或 {"source_ids":[前ID,後ID],"score":number}
+- anchor: null 或 {"source_ids":[前ID,後ID],"score":number}。RGB 候選沿用原格式，score 為平均 RGB 距離。條帶候選另含 `"method":"strip"`，score 為亮度相關係數。
 
 groups 每筆：
 - id: 從1開始整本唯一組ID；chapter_id: 章ID
