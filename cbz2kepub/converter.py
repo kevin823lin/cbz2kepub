@@ -310,7 +310,8 @@ def validate_pairing_report(path, summaries, job, target, direction):
             method, score = anchor.get('method', 'rgb'), anchor['score']
             if not ((method == 'rgb' and 0 <= score < 30)
                     or (method == 'strip' and 0.93 <= score <= 1)
-                    or (method == 'strip_fallback' and 0.82 <= score <= 1)):
+                    or (method == 'strip_fallback' and 0.82 <= score <= 1)
+                    or (method == 'edge_profile' and 0.95 <= score <= 1)):
                 raise ValueError('報告 anchor 的方法或分數無效')
             if chapter['spreadshift'] != ((anchor['source_ids'][0] - chapter['source_ids'][0]) % 2 == 1):
                 raise ValueError('偵測 anchor 起點與 spreadshift 不符')

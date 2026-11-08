@@ -48,11 +48,13 @@ class PairingReportTests(unittest.TestCase):
 
     def test_strip_anchor_has_a_distinct_score_range(self):
         anchor = self.report['chapters'][0]['anchor']
-        for method, score in [('strip', 0.968), ('strip_fallback', 0.82), ('strip_fallback', 0.9584)]:
+        for method, score in [('strip', 0.968), ('strip_fallback', 0.82), ('strip_fallback', 0.9584),
+                              ('edge_profile', 0.95), ('edge_profile', 1)]:
             anchor.update(method=method, score=score)
             self.assertEqual(self.validate()['chapters'][0]['anchor'], anchor)
         for method, score in [('strip', 12.5), ('strip', 0.89), ('strip_fallback', 0.819),
-                              ('strip_fallback', 1.01), ('unknown', 0.99)]:
+                              ('strip_fallback', 1.01), ('edge_profile', 0.949), ('edge_profile', 1.001),
+                              ('unknown', 0.99)]:
             with self.subTest(method=method, score=score):
                 anchor.update(method=method, score=score)
                 with self.assertRaisesRegex(ValueError, 'anchor'):
