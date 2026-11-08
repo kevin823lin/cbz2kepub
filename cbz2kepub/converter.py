@@ -308,7 +308,9 @@ def validate_pairing_report(path, summaries, job, target, direction):
                     or type(anchor.get('score')) not in (int, float) or not math.isfinite(anchor['score'])):
                 raise ValueError('報告偵測章節缺少有效 anchor')
             method, score = anchor.get('method', 'rgb'), anchor['score']
-            if not ((method == 'rgb' and 0 <= score < 30) or (method == 'strip' and 0.93 <= score <= 1)):
+            if not ((method == 'rgb' and 0 <= score < 30)
+                    or (method == 'strip' and 0.93 <= score <= 1)
+                    or (method == 'strip_fallback' and 0.82 <= score <= 1)):
                 raise ValueError('報告 anchor 的方法或分數無效')
             if chapter['spreadshift'] != ((anchor['source_ids'][0] - chapter['source_ids'][0]) % 2 == 1):
                 raise ValueError('偵測 anchor 起點與 spreadshift 不符')
