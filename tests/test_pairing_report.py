@@ -43,8 +43,101 @@ class PairingReportTests(unittest.TestCase):
         self.path.write_text(json.dumps(self.report), encoding='utf-8')
         return validate_pairing_report(self.path, self.summaries, self.job, (100, 150), 'rtl')
 
+    def configure_v3(self, count, opening=False, body_start=None, spreadshift=False):
+        source_ids = list(range(1, count + 1))
+        actual_shift = ((body_start - source_ids[0]) % 2 == 1 if body_start is not None
+                        else False if opening else spreadshift)
+        groups = []
+        cursor = 0
+        if opening:
+            groups.append((source_ids[:2], 'paired'))
+            cursor = 2
+        if actual_shift and cursor == 0:
+            groups.append(([source_ids[0]], 'single'))
+            cursor = 1
+        elif actual_shift and opening and cursor < count:
+            groups.append(([source_ids[cursor]], 'single'))
+            cursor += 1
+        while cursor + 1 < count:
+            groups.append((source_ids[cursor:cursor + 2], 'paired'))
+            cursor += 2
+        if cursor < count:
+            groups.append(([source_ids[cursor]], 'single'))
+        self.job['archive_stats'] = [{'image_count': count}]
+        self.job['image_count'] = count
+        self.job['spreadshift'] = spreadshift
+        reason = 'detected' if body_start is not None else 'opening' if opening else 'spreadshift'
+        anchor = ({'source_ids': [body_start, body_start + 1], 'score': 12.5}
+                  if body_start is not None else None)
+        opening_anchor = ({'source_ids': source_ids[:2], 'score': 12.5} if opening else None)
+        self.report.update(version=3, groups=[], pages=[])
+        self.report['chapters'][0].update(source_ids=source_ids, mode='paired', spreadshift=actual_shift,
+                                          reason=reason, anchor=anchor, opening_anchor=opening_anchor)
+        self.summaries[0]['body_layout'] = []
+        for group_id, (group_ids, mode) in enumerate(groups, 1):
+            self.report['groups'].append({'id': group_id, 'chapter_id': 1, 'source_ids': group_ids, 'mode': mode})
+            for offset, source_id in enumerate(group_ids):
+                side = ('right' if offset == 0 else 'left') if mode == 'paired' else 'center'
+                image = f'Images/kcc-{source_id:04}-kcc-x.jpg'
+                xhtml = f'Text/{source_id}.xhtml'
+                size = [80 + source_id, 120]
+                geometry = {'crop_box': [0, 0, 100, 150], 'rendered_size': size} if mode == 'paired' else None
+                viewport = size
+                self.report['pages'].append({'source_id': source_id, 'group_id': group_id, 'image': image,
+                                             'xhtml': xhtml, 'tome': 1, 'side': side, 'image_size': size,
+                                             'viewport': viewport, 'geometry': geometry})
+                self.summaries[0]['body_layout'].append({
+                    'xhtml': xhtml, 'images': [{'path': image, 'size': tuple(size)}],
+                    'viewport': tuple(viewport) if viewport else None, 'side': side,
+                })
+
     def test_valid_pairing_report_matches_epub(self):
         self.assertEqual(self.validate()['state'], 'completed')
+
+    def test_v2_without_opening_anchor_remains_supported(self):
+        self.assertEqual(self.validate()['version'], 2)
+
+    def test_v3_opening_only_and_opening_then_body_anchor(self):
+        self.configure_v3(2, opening=True)
+        self.assertEqual(self.validate()['chapters'][0]['reason'], 'opening')
+        self.configure_v3(2, opening=True, spreadshift=True)
+        self.assertEqual(self.validate()['chapters'][0]['spreadshift'], False)
+        self.configure_v3(6, opening=True, body_start=4, spreadshift=True)
+        self.assertEqual(self.validate()['chapters'][0]['spreadshift'], True)
+
+    def test_v3_body_anchor_without_opening_and_no_anchor_config_fallback(self):
+        self.configure_v3(4, body_start=2, spreadshift=True)
+        self.assertEqual(self.validate()['chapters'][0]['reason'], 'detected')
+        self.configure_v3(4, spreadshift=True)
+        self.assertEqual(self.validate()['chapters'][0]['reason'], 'spreadshift')
+        self.configure_v3(4, spreadshift=False)
+        self.assertEqual(self.validate()['chapters'][0]['spreadshift'], False)
+
+    def test_v3_rejects_invalid_opening_body_reason_and_parity(self):
+        self.configure_v3(4, opening=True)
+        del self.report['chapters'][0]['opening_anchor']
+        with self.assertRaisesRegex(ValueError, 'opening_anchor'):
+            self.validate()
+        self.configure_v3(4, opening=True)
+        self.report['chapters'][0]['opening_anchor']['source_ids'] = [2, 3]
+        with self.assertRaisesRegex(ValueError, '前兩個'):
+            self.validate()
+        for field, value in (('score', float('inf')), ('method', 'unknown')):
+            self.configure_v3(4, opening=True)
+            self.report['chapters'][0]['opening_anchor'][field] = value
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'anchor'):
+                self.validate()
+        self.configure_v3(4, body_start=2, spreadshift=True)
+        self.report['chapters'][0]['anchor']['method'] = 'unknown'
+        with self.assertRaisesRegex(ValueError, 'anchor'):
+            self.validate()
+        self.configure_v3(6, opening=True, body_start=2, spreadshift=True)
+        with self.assertRaisesRegex(ValueError, '早於允許'):
+            self.validate()
+        self.configure_v3(4, body_start=2, spreadshift=True)
+        self.report['chapters'][0]['spreadshift'] = False
+        with self.assertRaisesRegex(ValueError, 'spreadshift'):
+            self.validate()
 
     def test_strip_anchor_has_a_distinct_score_range(self):
         anchor = self.report['chapters'][0]['anchor']
@@ -124,6 +217,9 @@ class PairingReportTests(unittest.TestCase):
              'viewport': None, 'side': 'center'}
             for index, suffix in ((1, 'a'), (2, 'b'))
         ]
+        self.assertEqual(self.validate()['state'], 'completed')
+        self.report['version'] = 3
+        self.report['chapters'][0]['opening_anchor'] = None
         self.assertEqual(self.validate()['state'], 'completed')
 
         self.report['chapters'][0].update(mode='paired', reason='spreadshift')

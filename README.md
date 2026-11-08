@@ -62,7 +62,7 @@ keep_backup = true
 
 `title` 對應輸入的作品資料夾，也作為成品書名與系列名。每部作品一行，可用編輯器 Ctrl+/ 切換整行註解。
 
-Kobo 作品設為 `chapter_pairing = true` 時，每章按圖片接縫決定雙頁排列。同組兩頁共同裁切上下邊界，輸出等高、可異寬的圖片。每頁 viewport 採用圖片實際尺寸，供直向置中、橫向貼齊閱讀。未找到跨頁時，`spreadshift = false` 從第 1、2 頁成對，`true` 從第 2、3 頁成對。省略 `chapter_pairing` 或設為 `false` 會採用原生 KCC 流程。詳見[章內配對規則](docs/chapter-pairing.md)。
+Kobo 作品設為 `chapter_pairing = true` 時，章首 1／2 與正文獨立辨識跨頁，容許 `12｜3｜45` 的章首例外。同組兩頁共同裁切上下邊界，輸出等高、可異寬的圖片。每頁 viewport 採用圖片實際尺寸，供直向置中、橫向並排閱讀。未找到跨頁時，`spreadshift = false` 從第 1、2 頁成對，`true` 從第 2、3 頁成對。省略 `chapter_pairing` 或設為 `false` 會採用原生 KCC 流程。詳見[章內配對規則](docs/chapter-pairing.md)。
 
 設定內的相對路徑以 **config.toml 所在目錄** 為基準。省略 `work_root` 時，使用 **專案根目錄** 下的 `.cbz2kepub-work/`。完整欄位與預設行為見 [config.toml 說明](docs/configuration.md#configtoml)。
 

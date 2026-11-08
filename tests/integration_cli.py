@@ -134,6 +134,30 @@ class CliIntegrationTests(unittest.TestCase):
         self.assertEqual(len(report['pages']), 4)
         self.check_metadata(outputs)
 
+    def test_independent_opening_keeps_page_three_centered_in_actual_epub(self):
+        self.pairing_case([('01 - Opening', [])])
+        source = self.source / '01 - Opening.cbz'
+        with zipfile.ZipFile(source, 'w') as archive:
+            for page in range(1, 6):
+                image = Image.new('RGB', (160, 240), 'white')
+                if page in (1, 2, 4, 5):
+                    column = 2 if page in (1, 4) else 157
+                    for y in range(240):
+                        value = (60 if y * 50 // 240 % 2 else 180) + (20 if page >= 4 else 0)
+                        image.putpixel((column, y), (value,) * 3)
+                buffer = BytesIO()
+                image.save(buffer, 'PNG')
+                archive.writestr(f'{page}.png', buffer.getvalue())
+        self.hashes[source.name] = hashlib.sha256(source.read_bytes()).hexdigest()
+        outputs, captured = self.convert_capturing_pairing_report(converter.load_config(self.config_path))
+        report = captured['report']
+        self.assertEqual(report['version'], 3)
+        self.assertEqual(report['chapters'][0]['opening_anchor']['source_ids'], [1, 2])
+        self.assertEqual(report['chapters'][0]['anchor']['source_ids'], [4, 5])
+        self.assertEqual([group['source_ids'] for group in report['groups']], [[1, 2], [3], [4, 5]])
+        self.assertEqual([page['side'] for page in report['pages']], ['right', 'left', 'center', 'right', 'left'])
+        self.check_metadata(outputs)
+
     def test_pairing_fusion_fallback_and_forced_volume_split_keep_pairs_together(self):
         self.pairing_case([
             ('01 - Long', [(f'{index:03}.png', (160, 240), index) for index in range(1, 13)]),

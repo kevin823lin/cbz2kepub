@@ -42,17 +42,20 @@ class AcceptanceChecksTests(unittest.TestCase):
             'direction': 'rtl', 'target': [1264, 1680],
             'chapters': [
                 {'id': 1, 'title': '01', 'mode': 'paired', 'reason': 'detected', 'spreadshift': False,
-                 'anchor': {'source_ids': [1, 2], 'score': 18.2}, 'source_ids': [1, 2, 3]},
+                 'opening_anchor': {'source_ids': [1, 2], 'score': 18.2},
+                 'anchor': {'source_ids': [3, 4], 'score': 19.0}, 'source_ids': [1, 2, 3, 4]},
                 {'id': 2, 'title': '02', 'mode': 'native', 'reason': 'wide_image', 'spreadshift': False,
                  'anchor': None, 'source_ids': [4]},
             ],
             'groups': [{'mode': 'paired'}, {'mode': 'single'}, {'mode': 'native'}],
-            'pages': [{}, {}, {}, {}],
+            'pages': [{}, {}, {}, {}, {}],
         })
         self.assertEqual(summary['chapter_modes'], {'paired': 1, 'native': 1})
         self.assertEqual(summary['groups'], {'paired': 1, 'single': 1, 'native': 1})
-        self.assertEqual(summary['chapters'][0]['anchor']['score'], 18.2)
-        self.assertEqual(summary['pages'], 4)
+        self.assertEqual(summary['chapters'][0]['opening_anchor']['score'], 18.2)
+        self.assertEqual(summary['chapters'][0]['anchor']['score'], 19.0)
+        self.assertIsNone(summary['chapters'][1]['opening_anchor'])
+        self.assertEqual(summary['pages'], 5)
 
 
 if __name__ == '__main__':

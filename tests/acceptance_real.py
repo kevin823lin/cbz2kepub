@@ -37,7 +37,8 @@ def pairing_summary(report):
         'direction': report['direction'], 'target': report['target'],
         'chapters': [{'id': chapter['id'], 'title': chapter['title'], 'mode': chapter['mode'],
                       'reason': chapter['reason'], 'spreadshift': chapter['spreadshift'],
-                      'anchor': chapter['anchor'], 'source_ids': chapter['source_ids']} for chapter in report['chapters']],
+                      'opening_anchor': chapter.get('opening_anchor'), 'anchor': chapter['anchor'],
+                      'source_ids': chapter['source_ids']} for chapter in report['chapters']],
         'chapter_modes': {mode: sum(chapter['mode'] == mode for chapter in report['chapters'])
                           for mode in ('paired', 'native')},
         'groups': {mode: sum(group['mode'] == mode for group in report['groups'])

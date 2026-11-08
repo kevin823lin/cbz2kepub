@@ -268,12 +268,13 @@ def validate_book(job, summaries):
 
 
 def validate_pairing_report(path, summaries, job, target, direction):
-    """Validate the v2 report against the completed EPUBs before publication."""
+    """Validate the pairing report against the completed EPUBs before publication."""
     try:
         report = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f'章內配對報告缺失或無效：{path}') from exc
-    if (not isinstance(report, dict) or type(report.get('version')) is not int or report.get('version') != 2
+    version = report.get('version') if isinstance(report, dict) else None
+    if (not isinstance(report, dict) or type(version) is not int or version not in (2, 3)
             or report.get('state') != 'completed'
             or report.get('target') != list(target) or report.get('direction') != direction
             or not all(isinstance(report.get(key), list) for key in ('chapters', 'groups', 'pages'))):
@@ -287,14 +288,16 @@ def validate_pairing_report(path, summaries, job, target, direction):
         if (not isinstance(chapter, dict) or type(chapter.get('id')) is not int or chapter.get('id') != index
                 or not isinstance(chapter.get('title'), str) or chapter.get('mode') not in ('paired', 'native')
                 or type(chapter.get('spreadshift')) is not bool
-                or chapter.get('reason') not in ('detected', 'spreadshift', 'wide_image')):
+                or chapter.get('reason') not in (('detected', 'spreadshift', 'wide_image') if version == 2
+                                                  else ('detected', 'opening', 'spreadshift', 'wide_image'))):
             raise ValueError('章內配對報告含無效章節')
         if chapter['title'] != job['sources'][index - 1].stem:
             raise ValueError('報告章節名稱與來源不符')
         if ((chapter['mode'] == 'native') != (chapter['reason'] == 'wide_image')
                 or (chapter['reason'] == 'detected' and chapter['mode'] != 'paired')):
             raise ValueError('報告章節 mode/reason 不一致')
-        if chapter['reason'] != 'detected' and chapter['spreadshift'] != job['spreadshift']:
+        if (chapter['reason'] in ('spreadshift', 'wide_image')
+                and chapter['spreadshift'] != job['spreadshift']):
             raise ValueError('報告章節 spreadshift 與作品設定不符')
         source_ids = chapter.get('source_ids')
         if (not isinstance(source_ids, list) or not source_ids
@@ -302,21 +305,56 @@ def validate_pairing_report(path, summaries, job, target, direction):
                 or source_ids != list(range(next_source, next_source + len(source_ids)))):
             raise ValueError('報告章節來源 ID 不連續或順序錯誤')
         anchor = chapter.get('anchor')
+        opening_anchor = chapter.get('opening_anchor') if version == 3 else None
+        if version == 3 and 'opening_anchor' not in chapter:
+            raise ValueError('v3 報告章節缺少 opening_anchor')
         if chapter['reason'] == 'detected':
             if (not isinstance(anchor, dict) or anchor.get('source_ids') not in
                     [chapter['source_ids'][index:index + 2] for index in range(len(chapter['source_ids']) - 1)]
                     or type(anchor.get('score')) not in (int, float) or not math.isfinite(anchor['score'])):
                 raise ValueError('報告偵測章節缺少有效 anchor')
-            method, score = anchor.get('method', 'rgb'), anchor['score']
+            if chapter['spreadshift'] != ((anchor['source_ids'][0] - chapter['source_ids'][0]) % 2 == 1):
+                raise ValueError('偵測 anchor 起點與 spreadshift 不符')
+        elif anchor is not None:
+            raise ValueError('非偵測章節 anchor 必須為 null')
+        if version == 3:
+            if chapter['mode'] == 'native':
+                if opening_anchor is not None or anchor is not None or chapter['reason'] != 'wide_image':
+                    raise ValueError('native 章節不得有 anchor，reason 必須為 wide_image')
+                if chapter['spreadshift'] != job['spreadshift']:
+                    raise ValueError('native 章節 spreadshift 與作品設定不符')
+            else:
+                opening_ids = source_ids[:2]
+                if opening_anchor is not None and (len(source_ids) < 2 or not isinstance(opening_anchor, dict)
+                        or opening_anchor.get('source_ids') != opening_ids):
+                    raise ValueError('opening_anchor 必須對應章節前兩個來源 ID')
+                minimum_body_start = source_ids[0] + (2 if opening_anchor is not None else 1)
+                if anchor is not None and (len(source_ids) < 2 or anchor['source_ids'][0] < minimum_body_start):
+                    raise ValueError('body anchor 起點早於允許頁面')
+                if chapter['reason'] == 'detected' and anchor is None:
+                    raise ValueError('detected 章節必須有 body anchor')
+                if chapter['reason'] == 'opening' and (anchor is not None or opening_anchor is None):
+                    raise ValueError('opening reason 需要 opening_anchor 且不得有 body anchor')
+                if chapter['reason'] == 'spreadshift' and (anchor is not None or opening_anchor is not None):
+                    raise ValueError('spreadshift reason 不得有 anchor')
+                if chapter['reason'] not in ('detected', 'opening', 'spreadshift'):
+                    raise ValueError('paired 章節 reason 無效')
+                expected_shift = ((anchor['source_ids'][0] - source_ids[0]) % 2 == 1
+                                  if anchor is not None else False if opening_anchor is not None
+                                  else job['spreadshift'])
+                if chapter['spreadshift'] != expected_shift:
+                    raise ValueError('報告章節 spreadshift 與 anchor／作品設定不符')
+        for candidate in (anchor, opening_anchor):
+            if candidate is None:
+                continue
+            if type(candidate.get('score')) not in (int, float) or not math.isfinite(candidate['score']):
+                raise ValueError('報告 anchor 的方法或分數無效')
+            method, score = candidate.get('method', 'rgb'), candidate['score']
             if not ((method == 'rgb' and 0 <= score < 30)
                     or (method == 'strip' and 0.93 <= score <= 1)
                     or (method == 'strip_fallback' and 0.82 <= score <= 1)
                     or (method == 'edge_profile' and 0.95 <= score <= 1)):
                 raise ValueError('報告 anchor 的方法或分數無效')
-            if chapter['spreadshift'] != ((anchor['source_ids'][0] - chapter['source_ids'][0]) % 2 == 1):
-                raise ValueError('偵測 anchor 起點與 spreadshift 不符')
-        elif anchor is not None:
-            raise ValueError('非偵測章節 anchor 必須為 null')
         next_source += len(source_ids)
         chapter_by_id[index] = chapter
     counts = [item['image_count'] for item in (job.get('archive_stats') or [])]
@@ -424,9 +462,13 @@ def validate_pairing_report(path, summaries, job, target, direction):
             expected = [(source_id, 'native') for source_id in source_ids]
         else:
             cursor = 0
+            if version == 3 and chapter.get('opening_anchor') is not None:
+                expected.append((source_ids[:2], 'paired'))
+                cursor = 2
             if chapter['spreadshift']:
-                expected.append((source_ids[0], 'single'))
-                cursor = 1
+                if cursor < len(source_ids):
+                    expected.append((source_ids[cursor], 'single'))
+                    cursor += 1
             while cursor + 1 < len(source_ids):
                 expected.append((source_ids[cursor:cursor + 2], 'paired'))
                 cursor += 2
