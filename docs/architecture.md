@@ -49,6 +49,8 @@ KCC 的實作版本由主專案 gitlink 指定。`v12.1.4` tag 保留為原始�
 
 原生 metadata.py 維持不變；wrapper 省略空值，並補償固定版 parser 額外的 unescape。空／損壞內嵌 XML 回退至 wrapper XML，不吞掉無效 wrapper XML。
 
+KCC 依書名產生中間輸出檔名，但只截短檔名用的字串，保留 EPUB 完整書名。檔名含副檔名、數字卷號與重名後綴，Windows 限制為 255 個 UTF-16 碼元，並依輸出目錄長度保守維持完整路徑不超過 259 個碼元；其他平台限制為 255 個 UTF-8 bytes。每次重名編號都重新計算剩餘空間，目錄過深而無法容納檔名時明確失敗。wrapper 最終仍按 `safe_stem()` 與數字卷號命名；此保護不會縮短 wrapper 發布交易內的路徑，output 仍需選擇足夠短的目錄。
+
 wrapper 透過兩個絕對路徑環境變數交付容量介面：
 
 - `CBZ2KEPUB_SPACE_PLAN`：本次工作計畫 JSON。

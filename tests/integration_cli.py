@@ -50,17 +50,39 @@ class CliIntegrationTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), self.hashes[path.name])
         self.temporary.cleanup()
 
-    def check_metadata(self, results):
+    def check_metadata(self, results, title='測試漫畫'):
         for index, path in enumerate(results, 1):
             info = inspect_epub(path)
-            expected_title = '測試漫畫' + (f' [{index}/{len(results)}]' if len(results) > 1 else '')
+            expected_title = title + (f' [{index}/{len(results)}]' if len(results) > 1 else '')
             self.assertEqual(info['title'], expected_title)
             self.assertEqual(info['authors'], [self.author])
             self.assertEqual(info['description'], self.description)
-            self.assertEqual(info['series'], '測試漫畫')
+            self.assertEqual(info['series'], title)
             self.assertEqual(info['series_index'], str(index))
             self.assertTrue(info['has_cover_page'])
             self.assertEqual(info['direction'], 'rtl')
+
+    def test_long_title_keeps_metadata_and_final_names_for_single_and_split_volumes(self):
+        config = converter.load_config(self.config_path)
+        job = config['jobs'][0]
+        destination = tempfile.TemporaryDirectory(prefix='')
+        self.addCleanup(destination.cleanup)
+        config['paths']['output_dir'] = Path(destination.name)
+        length = 246
+        if sys.platform.startswith('win'):
+            # Leave room for final volume numbers; KCC also adds the metadata title suffix.
+            output = config['paths']['work_root'] / 'c2k-12345678' / 'o'
+            length = min(length, 259 - len(str(output).encode('utf-16-le')) // 2 - 1 - len('.kepub.epub') - 3)
+        title = 'A' * length
+        job.update(title=title, stem=converter.safe_stem(title))
+        for target_mib in (1850, 2):
+            with self.subTest(target_mib=target_mib), converter.output_lock(config['paths']['output_dir']):
+                results = converter.convert_comic(job, config, target_mib=target_mib)
+                self.assertEqual(len(results) == 1, target_mib == 1850)
+                self.check_metadata(results, title)
+                for index, path in enumerate(results, 1):
+                    suffix = f' {index}' if len(results) > 1 else ''
+                    self.assertEqual(path.name, f'{converter.safe_stem(title)}{suffix}.kepub.epub')
 
     def test_fusion_long_chapter_and_forced_page_split_keep_navigation(self):
         config = converter.load_config(self.config_path)
